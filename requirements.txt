@@ -1,0 +1,41 @@
+# Exact pins only (assignment §3.1). Resolved together and checked with `pip check` on Python 3.13.
+# torch is installed from the CPU-only wheel index in the Dockerfile; same version as pinned here.
+
+# API + streaming
+fastapi==0.162.0
+uvicorn==0.54.0
+pydantic==2.14.1
+python-dotenv==1.2.4
+
+# Orchestration
+langgraph==1.2.17
+langchain==1.4.7
+langchain-core==1.7.0
+langchain-community==0.4.1
+
+# LLM providers (Google Gemini + NVIDIA NIM via its OpenAI-compatible API)
+langchain-google-genai==4.4.2
+langchain-openai==1.7.2
+
+# Real-time knowledge: Tavily Remote MCP
+langchain-mcp-adapters==0.3.2
+mcp==1.30.0
+
+# RAG: chunking, local embeddings, vector store
+langchain-text-splitters==1.1.3
+sentence-transformers==6.1.0
+transformers==5.19.0
+torch==2.14.0
+chromadb==1.5.9
+
+# Durable conversation state
+google-cloud-firestore==2.34.1
+
+# Corpus fetching
+arxiv==4.0.1
+pypdf==6.21.2
+
+# Evaluation
+ragas==0.4.3
+datasets==5.1.0
+httpx==0.28.1

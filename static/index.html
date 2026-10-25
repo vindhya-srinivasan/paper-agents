@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paper Agents</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">◆</span>
+      <div>
+        <h1>Paper Agents</h1>
+        <p class="sub">Multi-agent RAG over 50 arXiv papers on LLM agents &amp; retrieval · supervisor + research / data / summary agents · Gemini + NVIDIA routing</p>
+      </div>
+    </div>
+    <div class="status" id="status">connecting…</div>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Chat">
+      <div id="messages" class="messages">
+        <div class="empty" id="empty">
+          <p>Ask about the papers, their metadata, or something current. Try:</p>
+          <div class="examples">
+            <button class="ex">How does Self-RAG decide when to retrieve?</button>
+            <button class="ex">How many papers per year are in the corpus?</button>
+            <button class="ex">Summarize the ReAct paper and its follow-up work</button>
+            <button class="ex">What are the latest developments in agentic RAG this month?</button>
+            <button class="ex">Compare Reflexion and Tree of Thoughts, and which is older?</button>
+          </div>
+        </div>
+      </div>
+      <form id="form" class="composer">
+        <textarea id="query" rows="2" placeholder="Ask a question…" required maxlength="2000"></textarea>
+        <div class="actions">
+          <button type="button" id="reset" class="ghost" title="Start a new session">New session</button>
+          <button type="submit" id="send">Send</button>
+        </div>
+      </form>
+    </section>
+
+    <aside class="side" aria-label="Inspector">
+      <nav class="tabs" role="tablist">
+        <button role="tab" class="tab active" data-tab="routing">Routing</button>
+        <button role="tab" class="tab" data-tab="trace">Trace <span id="traceCount" class="count">0</span></button>
+        <button role="tab" class="tab" data-tab="sources">Sources <span id="srcCount" class="count">0</span></button>
+      </nav>
+      <div class="panel active" id="panel-routing"><p class="hint">Routing decisions for each turn appear here: which agents ran, which LLM provider handled each step, and why.</p></div>
+      <div class="panel" id="panel-trace"><p class="hint">Every orchestration event, in order, for the latest turn.</p></div>
+      <div class="panel" id="panel-sources"><p class="hint">Citations for the latest answer, linked to their arXiv paper or web page.</p></div>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Explicit, so `gcloud builds submit` does not fall back to .gitignore.
+# The corpus text in data/corpus/ MUST upload: the index is built from it inside the image.
+.env
+.git/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+chroma_index/
+data/papers.db
+data/raw_pdfs/
+eval_results/

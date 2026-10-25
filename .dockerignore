@@ -1,0 +1,17 @@
+# Kept at the repo root, next to the Dockerfile: the only place Docker reads it.
+.env
+.git/
+.gitignore
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+# Rebuilt inside the image, never copied from the host
+chroma_index/
+data/papers.db
+data/raw_pdfs/
+eval_results/
+tests/

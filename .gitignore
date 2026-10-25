@@ -1,0 +1,26 @@
+# Secrets
+.env
+*.key
+service-account*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Generated artifacts (rebuilt by `python -m src.rag.ingest` / the Docker build)
+chroma_index/
+data/papers.db
+data/raw_pdfs/
+eval_results/raw/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Submission artifact
+submission.zip
