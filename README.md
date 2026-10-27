@@ -118,7 +118,7 @@ curl -s $URL/health        # rag: ok (N chunks), tavily_mcp: ok, state_store: fi
 python scripts/smoke_test.py $URL
 ```
 
-The service gets 2 GiB instead of the reference 1 GiB because torch, the embedding model and the Chroma index together need more than 1 GiB (peak measured in `docs/evaluation.md`). `--cpu-boost` shortens cold starts. A request that arrives during a cold start waits for the instance to finish loading; it isn't dropped.
+The service gets 2 GiB instead of the reference 1 GiB for headroom: torch, the embedding model and the Chroma index peaked at about 47% of 2 GiB (~960 MB) in testing, which would be about 94% of a 1 GiB instance and one spike away from an out-of-memory restart. `--cpu-boost` shortens cold starts. A request that arrives during a cold start waits for the instance to finish loading; it isn't dropped.
 
 **Checking that history survives a restart:**
 

@@ -1,0 +1,147 @@
+[
+ {
+  "label": "warm",
+  "when": "2026-10-27 00:27",
+  "query": "How does RAG-Token differ from RAG-Sequence?",
+  "client_ttft_ms": 4242,
+  "client_total_ms": 4542,
+  "server": {
+   "total": 4421.6,
+   "ttft": 4120.2,
+   "llm": 4232.7,
+   "retrieval": 58.5,
+   "tools": 0.0
+  },
+  "usage": {
+   "input_tokens": 2683,
+   "output_tokens": 166
+  },
+  "cost_usd": 0.00122,
+  "providers": {
+   "supervisor": "gemini:gemini-3.5-flash-lite",
+   "worker:research": "gemini:gemini-3.5-flash-lite",
+   "respond": "gemini:gemini-3.5-flash-lite"
+  },
+  "plan": [
+   "research"
+  ],
+  "instance_id": "f001eebc",
+  "errors": []
+ },
+ {
+  "label": "warm",
+  "when": "2026-10-27 00:28",
+  "query": "How many papers in the corpus are about multi-agent systems?",
+  "client_ttft_ms": 1915,
+  "client_total_ms": 1978,
+  "server": {
+   "total": 1895.7,
+   "ttft": 1834.1,
+   "llm": 1808.1,
+   "retrieval": 0.0,
+   "tools": 11.0
+  },
+  "usage": {
+   "input_tokens": 926,
+   "output_tokens": 94
+  },
+  "cost_usd": 0.000513,
+  "providers": {
+   "supervisor": "gemini:gemini-3.5-flash-lite",
+   "worker:data": "gemini:gemini-3.5-flash-lite",
+   "respond": "gemini:gemini-3.5-flash-lite"
+  },
+  "plan": [
+   "data"
+  ],
+  "instance_id": "f001eebc",
+  "errors": []
+ },
+ {
+  "label": "warm",
+  "when": "2026-10-27 00:28",
+  "query": "Summarize the MemGPT paper.",
+  "client_ttft_ms": 14791,
+  "client_total_ms": 16306,
+  "server": {
+   "total": 16223.8,
+   "ttft": 14673.5,
+   "llm": 8402.0,
+   "retrieval": 10.2,
+   "tools": 0.0
+  },
+  "usage": {
+   "input_tokens": 3625,
+   "output_tokens": 677
+  },
+  "cost_usd": 0.00034,
+  "providers": {
+   "supervisor": "gemini:gemini-3.5-flash-lite",
+   "worker:summary": "gemini:gemini-3.5-flash-lite",
+   "respond": "nvidia:nvidia/nemotron-3-ultra-550b-a55b"
+  },
+  "plan": [
+   "summary"
+  ],
+  "instance_id": "f001eebc",
+  "errors": []
+ },
+ {
+  "label": "warm",
+  "when": "2026-10-27 00:28",
+  "query": "What happened in AI agent research news this week?",
+  "client_ttft_ms": 4015,
+  "client_total_ms": 4172,
+  "server": {
+   "total": 4087.2,
+   "ttft": 3816.3,
+   "llm": 2061.9,
+   "retrieval": 0.0,
+   "tools": 1958.8
+  },
+  "usage": {
+   "input_tokens": 2310,
+   "output_tokens": 164
+  },
+  "cost_usd": 0.001103,
+  "providers": {
+   "supervisor": "gemini:gemini-3.5-flash-lite",
+   "worker:research": "gemini:gemini-3.5-flash-lite",
+   "respond": "gemini:gemini-3.5-flash-lite"
+  },
+  "plan": [
+   "research"
+  ],
+  "instance_id": "f001eebc",
+  "errors": []
+ },
+ {
+  "label": "warm",
+  "when": "2026-10-27 00:28",
+  "query": "Compare HyDE and DPR as retrieval approaches, and which came first?",
+  "client_ttft_ms": 2502,
+  "client_total_ms": 2859,
+  "server": {
+   "total": 2781.0,
+   "ttft": 2338.5,
+   "llm": 2573.1,
+   "retrieval": 115.0,
+   "tools": 0.0
+  },
+  "usage": {
+   "input_tokens": 2866,
+   "output_tokens": 226
+  },
+  "cost_usd": 0.001425,
+  "providers": {
+   "supervisor": "gemini:gemini-3.5-flash-lite",
+   "worker:research": "gemini:gemini-3.5-flash-lite",
+   "respond": "gemini:gemini-3.5-flash-lite"
+  },
+  "plan": [
+   "research"
+  ],
+  "instance_id": "f001eebc",
+  "errors": []
+ }
+]
