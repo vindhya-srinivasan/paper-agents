@@ -133,3 +133,39 @@ def test_parse_web_results_formats():
     assert j[0]["url"] == "https://a.b"
     t = parse_web_results("Title: X\nURL: https://x.y\nContent: hello\n\nTitle: Y\nURL: https://y.z\nContent: bye", "summary")
     assert [r["url"] for r in t] == ["https://x.y", "https://y.z"]
+
+
+def test_gemini_quota_rotates_to_another_gemini_model(offline_env):
+    """429 on the primary Gemini model -> next Gemini model (same provider), not NVIDIA."""
+    from src import config
+    from tests.fakes import FakeChat, default_script
+
+    class Quota(FakeChat):
+        def _check(self):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded for gemini-3.5-flash-lite")
+
+    backup = FakeChat(name_tag="gemini-backup", script=default_script("gemini-backup"), calls=[])
+    router.set_test_models({"gemini": Quota(name_tag="g", script=default_script("g"), calls=[]),
+                            f"gemini:{config.GEMINI_FALLBACK_MODELS[0]}": backup,
+                            "nvidia": offline_env["nvidia"]})
+    ev = run("How does RAG work?")
+    routes = [e["data"] for e in ev if e["event"] == "trace" and e["data"]["kind"] == "llm_route"]
+    assert any(r["provider"] == "gemini" and r["model"] == config.GEMINI_FALLBACK_MODELS[0] and "same provider" in r["reason"]
+               for r in routes)
+    assert "gemini-backup" in answer(ev)
+    assert not any(r["dimension"] == "fallback" for r in routes)        # never had to leave Gemini
+
+
+def test_all_gemini_models_exhausted_falls_back_to_nvidia(offline_env):
+    from tests.fakes import FakeChat, default_script
+
+    class Quota(FakeChat):
+        def _check(self):
+            raise RuntimeError("429 RESOURCE_EXHAUSTED")
+
+    router.set_test_models({"gemini": Quota(name_tag="g", script=default_script("g"), calls=[]),
+                            "nvidia": offline_env["nvidia"]})
+    ev = run("How does RAG work?")
+    routes = [e["data"] for e in ev if e["event"] == "trace" and e["data"]["kind"] == "llm_route"]
+    assert any(r["dimension"] == "fallback" and r["provider"] == "nvidia" for r in routes)
+    assert "nvidia" in answer(ev)

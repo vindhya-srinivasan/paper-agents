@@ -19,15 +19,16 @@ class LocalEmbeddings(Embeddings):
         from sentence_transformers import SentenceTransformer
 
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name, device="cpu")
+        self.model = model_name   # a string: RAGAS's usage logging reads `.model` and requires text
+        self._st = SentenceTransformer(model_name, device="cpu")
         self.prefix = QUERY_PREFIX if "bge" in model_name.lower() else ""
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        vecs = self.model.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=len(texts) > 200)
+        vecs = self._st.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=len(texts) > 200)
         return [v.tolist() for v in vecs]
 
     def embed_query(self, text: str) -> list[float]:
-        return self.model.encode([self.prefix + text], normalize_embeddings=True)[0].tolist()
+        return self._st.encode([self.prefix + text], normalize_embeddings=True)[0].tolist()
 
 
 _override: Embeddings | None = None

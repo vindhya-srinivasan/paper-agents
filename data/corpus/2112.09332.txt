@@ -1,0 +1,676 @@
+WebGPT: Browser-assisted question-answering with
+human feedback
+Reiichiro Nakano∗ Jacob Hilton∗ Suchir Balaji∗ Jeff Wu Long Ouyang
+Christina Kim Christopher Hesse Shantanu Jain Vineet Kosaraju
+William Saunders Xu Jiang Karl Cobbe Tyna Eloundou Gretchen Krueger
+Kevin Button Matthew Knight Benjamin Chess John Schulman
+OpenAI
+Abstract
+We ﬁne-tune GPT-3 to answer long-form questions using a text-based webbrowsing environment, which allows the model to search and navigate the web.
+By setting up the task so that it can be performed by humans, we are able to train
+models on the task using imitation learning, and then optimize answer quality with
+human feedback. To make human evaluation of factual accuracy easier, models
+must collect references while browsing in support of their answers. We train and
+evaluate our models on ELI5, a dataset of questions asked by Reddit users. Our
+best model is obtained by ﬁne-tuning GPT-3 using behavior cloning, and then
+performing rejection sampling against a reward model trained to predict human
+preferences. This model’s answers are preferred by humans 56% of the time to
+those of our human demonstrators, and 69% of the time to the highest-voted answer
+from Reddit.
+1 Introduction
+A rising challenge in NLP is long-form question-answering (LFQA), in which a paragraph-length
+answer is generated in response to an open-ended question. LFQA systems have the potential
+to become one of the main ways people learn about the world, but currently lag behind human
+performance [Krishna et al., 2021]. Existing work tends to focus on two core components of the task,
+information retrieval and synthesis.
+In this work we leverage existing solutions to these components: we outsource document retrieval to
+the Microsoft Bing Web Search API,2 and utilize unsupervised pre-training to achieve high-quality
+synthesis by ﬁne-tuning GPT-3 [Brown et al., 2020]. Instead of trying to improve these ingredients,
+we focus on combining them using more faithful training objectives. Following Stiennon et al. [2020],
+we use human feedback to directly optimize answer quality, allowing us to achieve performance
+competitive with humans.
+We make two key contributions:
+∗Equal contribution, order randomized. Correspondence to: reiichiro@openai.com, jhilton@openai.
+com, suchir@openai.com, joschu@openai.com
+2https://www.microsoft.com/en-us/bing/apis/bing-web-search-api
+arXiv:2112.09332v3 [cs.CL] 1 Jun 2022
+(a) Screenshot from the demonstration interface.
+♦Question
+How can I train the crows in my neighborhood to bring me gifts?
+♦Quotes
+From Gifts From Crows | Outside My Window (www.birdsoutsidemywindow.org)
+> Many animals give gifts to members of their own species but crows and
+other corvids are the only ones known to give gifts to humans.
+♦Past actions
+Search how to train crows to bring you gifts
+Click Gifts From Crows | Outside My Window www.birdsoutsidemywindow.org
+Quote
+Back
+♦Title
+Search results for: how to train crows to bring you gifts
+♦Scrollbar: 0 - 11
+♦Text
+【0†How to Make Friends With Crows - PetHelpful †pethelpful.com】
+If you did this a few times, your crows would learn your new place, but
+as I said, I’m not sure if they will follow or visit you there since it’s
+probably not in their territory. The other option is simply to make new
+crow friends with the crows that live in your new neighborhood.
+【1†Gifts From Crows | Outside My Window †www.birdsoutsidemywindow.org】
+The partial piece of apple may have been left behind when the crow was
+startled rather than as a gift. If the crows bring bright objects you’ll
+know for sure that it’s a gift because it’s not something they eat.
+Brandi Williams says: May 28, 2020 at 7:19 am.
+♦Actions left: 96
+♦Next action
+(b) Corresponding text given to the model.
+Figure 1: An observation from our text-based web-browsing environment, as shown to human
+demonstrators (left) and models (right). The web page text has been abridged for illustrative purposes.
+• We create a text-based web-browsing environment that a ﬁne-tuned language model can
+interact with. This allows us to improve both retrieval and synthesis in an end-to-end fashion
+using general methods such as imitation learning and reinforcement learning.
+• We generate answers with references: passages extracted by the model from web pages
+while browsing. This is crucial for allowing labelers to judge the factual accuracy of answers,
+without engaging in a difﬁcult and subjective process of independent research.
+Our models are trained primarily to answer questions from ELI5 [Fan et al., 2019], a dataset of
+questions taken from the “Explain Like I’m Five” subreddit. We collect two additional kinds of
+data: demonstrations of humans using our web-browsing environment to answer questions, and
+comparisons between two model-generated answers to the same question (each with their own set of
+references). Answers are judged for their factual accuracy, coherence, and overall usefulness.
+We use this data in four main ways: behavior cloning (i.e., supervised ﬁne-tuning) using the demonstrations, reward modeling using the comparisons, reinforcement learning against the reward model,
+and rejection sampling against the reward model. Our best model uses a combination of behavior
+cloning and rejection sampling. We also ﬁnd reinforcement learning to provide some beneﬁt when
+inference-time compute is more limited.
+We evaluate our best model in three different ways. First, we compare our model’s answers to answers
+written by our human demonstrators on a held-out set of questions. Our model’s answers are preferred
+56% of the time, demonstrating human-level usage of the text-based browser. Second, we compare
+our model’s answers (with references stripped, for fairness) to the highest-voted answer provided
+by the ELI5 dataset. Our model’s answers are preferred 69% of the time. Third, we evaluate our
+model on TruthfulQA [Lin et al., 2021], an adversarial dataset of short-form questions. Our model’s
+answers are true 75% of the time, and are both true and informative 54% of the time, outperforming
+our base model (GPT-3), but falling short of human performance.
+The remainder of the paper is structured as follows:
+• In Section 2, we describe our text-based web-browsing environment and how our models
+interact with it.
+• In Section 3, we explain our data collection and training methods in more detail.
+• In Section 4, we evaluate our best-performing models (for different inference-time compute
+budgets) on ELI5 and TruthfulQA.
+• In Section 5, we provide experimental results comparing our different methods and how
+they scale with dataset size, parameter count, and inference-time compute.
+• In Section 6, we discuss the implications of our ﬁndings for training models to answer
+questions truthfully, and broader impacts.
+2
+Table 1: Actions the model can take. If a model generates any other text, it is considered to be an
+invalid action. Invalid actions still count towards the maximum, but are otherwise ignored.
+Command Effect
+Search <query> Send <query> to the Bing API and display a search results page
+Clicked on link <link ID> Follow the link with the given ID to a new page
+Find in page: <text> Find the next occurrence of <text> and scroll to it
+Quote: <text> If <text> is found in the current page, add it as a reference
+Scrolled down <1, 2, 3> Scroll down a number of times
+Scrolled up <1, 2, 3> Scroll up a number of times
+Top Scroll to the top of the page
+Back Go to the previous page
+End: Answer End browsing and move to answering phase
+End: <Nonsense, Controversial> End browsing and skip answering phase
+2 Environment design
+Previous work on question-answering such as REALM [Guu et al., 2020] and RAG [Lewis et al.,
+2020a] has focused on improving document retrieval for a given query. Instead, we use a familiar
+existing method for this: a modern search engine (Bing). This has two main advantages. First,
+modern search engines are already very powerful, and index a large number of up-to-date documents.
+Second, it allows us to focus on the higher-level task of using a search engine to answer questions,
+something that humans can do well, and that a language model can mimic.
+For this approach, we designed a text-based web-browsing environment. The language model is
+prompted with a written summary of the current state of the environment, including the question, the
+text of the current page at the current cursor location, and some other information (see Figure 1(b)).
+In response to this, the model must issue one of the commands given in Table 1, which performs an
+action such as running a Bing search, clicking on a link, or scrolling around. This process is then
+repeated with a fresh context (hence, the only memory of previous steps is what is recorded in the
+summary).
+While the model is browsing, one of the actions it can take is to quote an extract from the current
+page. When this is performed, the page title, domain name and extract are recorded to be used later
+as a reference. Browsing then continues until either the model issues a command to end browsing,
+the maximum number of actions has been reached, or the maximum total length of references has
+been reached. At this point, as long as there is at least one reference, the model is prompted with the
+question and the references, and must compose its ﬁnal answer.
+Further technical details about our environment can be found in Appendix A.
+3 Methods
+3.1 Data collection
+Guidance from humans is central to our approach. A language model pre-trained on natural language
+would not be able to use our text-based browser, since it does not know the format of valid commands.
+We therefore collected examples of humans using the browser to answer questions, which we call
+demonstrations. However, training on demonstrations alone does not directly optimize answer quality,
+and is unlikely to lead far beyond human performance [Stiennon et al., 2020]. We therefore collected
+pairs of model-generated answers to the same question, and asked humans which one they preferred,
+which we call comparisons.
+For both demonstrations and comparisons, the vast majority of questions were taken from ELI5 [Fan
+et al., 2019], a dataset of long-form questions. For diversity and experimentation, we also mixed in
+a small number of questions from other sources, such as TriviaQA [Joshi et al., 2017]. In total, we
+collected around 6,000 demonstrations, 92% of which were for questions from ELI5, and around
+21,500 comparisons, 98% of which were for questions from ELI5. A more detailed breakdown of the
+questions we used along with post-processing details can be found in Appendix B.
+3
+Table 2: An answer produced by our 175B best-of-64 model to a randomly-chosen question from the
+ELI5 test set (not cherry-picked). The full text of the references can be found in Appendix J, along
+with answers from our human demonstrators and the ELI5 dataset. Further samples are available at
+https://openaipublic.blob.core.windows.net/webgpt-answer-viewer/index.html .
+Question Why did we decide that certain words were "bad" and shouldn’t be used in social settings?
+Answer We have all been taught that there are certain words that should not be used in public, at least
+not without good reason. But why do some words fall into this category while others do not? It
+turns out that there is not a single answer to this question, as each word has a different history
+and carries different meanings in different cultures and families [2]. However, there are some
+general categories that "bad" words tend to fall into. "Bad" words generally relate to parts of life
+that we don’t like talking about in public, like bathroom functions, or negative ways of talking
+about people’s religion, skin color, ability, or gender [3]. Often, people say bad words when
+they are experiencing strong emotions, and those words are linked to our emotions [3].
+References
+(titles
+only)
+[1, 2, 3] Why Are Some Words ‘Bad’? | Vermont Public Radio (www.vpr.org)
+[4] On Words: ‘Bad’ Words and Why We Should Study Them | UV A Today (news.virginia.edu)
+[5] The Science of Curse Words: Why The &amp;@$! Do We Swear? (www.babbel.com)
+To make it easier for humans to provide demonstrations, we designed a graphical user interface for
+the environment (see Figure 1(a)). This displays essentially the same information as the text-based
+interface and allows any valid action to be performed, but is more human-friendly. For comparisons,
+we designed a similar interface, allowing auxiliary annotations as well as comparison ratings to be
+provided, although only the ﬁnal comparison ratings (better, worse or equally good overall) were
+used in training.
+For both demonstrations and comparisons, we emphasized that answers should be relevant, coherent,
+and supported by trustworthy references. Further details about these criteria and other aspects of our
+data collection pipeline can be found in Appendix C.
+We are releasing a dataset of comparisons, the details of which can be found in Appendix K.
+3.2 Training
+The use of pre-trained models is crucial to our approach. Many of the underlying capabilities required
+to successfully use our environment to answer questions, such as reading comprehension and answer
+synthesis, emerge as zero-shot capabilities of language models [Brown et al., 2020]. We therefore
+ﬁne-tuned models from the GPT-3 model family, focusing on the 760M, 13B and 175B model sizes.
+Starting from these models, we used four main training methods:
+1. Behavior cloning (BC). We ﬁne-tuned on the demonstrations using supervised learning,
+with the commands issued by the human demonstrators as labels.
+2. Reward modeling (RM). Starting from the BC model with the ﬁnal unembedding layer
+removed, we trained a model to take in a question and an answer with references, and output
+a scalar reward. Following Stiennon et al. [2020], the reward represents an Elo score, scaled
+such that the difference between two scores represents the logit of the probability that one
+will be preferred to the other by the human labelers. The reward model is trained using a
+cross-entropy loss, with the comparisons as labels. Ties are treated as soft 50% labels.
+3. Reinforcement learning (RL). Once again following Stiennon et al. [2020], we ﬁne-tuned
+the BC model on our environment using PPO [Schulman et al., 2017]. For the environment
+reward, we took the reward model score at the end of each episode, and added this to a KL
+penalty from the BC model at each token to mitigate overoptimization of the reward model.
+4. Rejection sampling (best-of-n). We sampled a ﬁxed number of answers (4, 16 or 64) from
+either the BC model or the RL model (if left unspeciﬁed, we used the BC model), and
+selected the one that was ranked highest by the reward model. We used this as an alternative
+method of optimizing against the reward model, which requires no additional training, but
+instead uses more inference-time compute.
+4
+We used mutually disjoint sets of questions for each of BC, RM and RL.
+For BC, we held out around 4% of the demonstrations to use as a validation set.
+For RM, we sampled answers for the comparison datasets in an ad-hoc manner, using models of
+various sizes (but primarily the 175B model size), trained using various combinations of methods and
+hyperparameters, and combined them into a single dataset. This was for data efﬁciency: we collected
+many comparisons for evaluation purposes, such as for tuning hyperparameters, and did not want to
+waste this data. Our ﬁnal reward models were trained on around 16,000 comparisons, the remaining
+5,500 being used for evaluation only.
+For RL, we trained on a mixture of 90% questions from ELI5 and 10% questions from TriviaQA.
+To improve sample efﬁciency, at the end of each episode we inserted 15 additional answering-only
+episodes using the same references as the previous episode. We were motivated to try this because
+answering explained slightly more of the variance in reward model score than browsing despite taking
+many fewer steps, and we found it to improve sample efﬁciency by approximately a factor of 2. We
+also randomized the maximum number of browsing actions, sampling uniformly from the range
+20–100 inclusive.
+Hyperparameters for all of our training methods can be found in Appendix E.
+4 Evaluation
+In evaluating our approach, we focused on three “WebGPT” models, each of which was trained with
+behavior cloning followed by rejection sampling against a reward model of the same size: a 760M
+best-of-4 model, a 13B best-of-16 model and a 175B best-of-64 model. As discussed in Section 5.2,
+these are compute-efﬁcient models corresponding to different inference-time compute budgets. We
+excluded RL for simplicity, since it did not provide signiﬁcant beneﬁt when combined with rejection
+sampling (see Figure 4).
+We evaluated all WebGPT models using a sampling temperature of 0.8, which was tuned using human
+evaluations, and with a maximum number of browsing actions of 100.
+4.1 ELI5
+We evaluated WebGPT on the ELI5 test set in two different ways:
+1. We compared model-generated answers to answers written by demonstrators using our
+web-browsing environment. For these comparisons, we used the same procedure as comparisons used for reward model training. We consider this to be a fair comparison, since the
+instructions for demonstrations and comparisons emphasize a very similar set of criteria.
+2. We compared model-generated answers to the reference answers from the ELI5 dataset,
+which are the highest-voted answers from Reddit. In this case, we were concerned about
+ecological validity, since our detailed comparison criteria may not match those of real-life
+users. We were also concerned about blinding, since Reddit answers do not typically include
+citations. To mitigate these concerns, we stripped all citations and references from the
+model-generated answers, hired new contractors who were not familiar with our detailed
+instructions, and gave them a much more minimal set of instructions, which are given in
+Appendix F.
+In both cases, we treat ties as 50% preference ratings (rather than excluding them).
+Our results are shown in Figure 2. Our best model, the 175B best-of-64 model, produces answers
+that are preferred to those written by our human demonstrators 56% of the time. This suggests that
+the use of human feedback is essential, since one would not expect to exceed 50% preference by
+imitating demonstrations alone (although it may still be possible, by producing a less noisy policy).
+The same model produces answers that are preferred to the reference answers from the ELI5 dataset
+69% of the time. This is a substantial improvement over Krishna et al. [2021], whose best model’s
+answers are preferred 23% of the time to the reference answers, although they use substantially less
+compute than even our smallest model.
+5
+Overall
+usefulness
+Coherence Factual
+accuracy
+0
+10
+20
+30
+40
+50
+60
+70GPT-Browser preferred (%)
+760M best-of-4 13B best-of-16 175B best-of-64
+Overall
+usefulness
+Coherence Factual
+accuracy
+0
+10
+20
+30
+40
+50
+60
+70WebGPT preferred (%)
+(a) WebGPT vs. human demonstrations.
+Overall
+usefulness
+Coherence Factual
+accuracy
+0
+10
+20
+30
+40
+50
+60
+70WebGPT preferred (%) (b) WebGPT vs. ELI5 reference answers.
+Figure 2: Human evaluations on ELI5 comparing against (a) demonstrations collected using our web
+browser, (b) the highest-voted answer for each question. The amount of rejection sampling (then in
+best-of-n) was chosen to be compute-efﬁcient (see Figure 8). Error bars represent±1 standard error.
+Although the evaluations against the ELI5 reference answers are useful for comparing to prior work,
+we believe that the evaluations against human demonstrations are more meaningful, for several
+reasons:
+• Fact-checking. It is difﬁcult to assess the factual accuracy of answers without references:
+even with the help of a search engine, expertise is often required. However, WebGPT and
+human demonstrators provide answers with references.
+• Objectivity. The use of minimal instructions makes it harder to know what criteria are
+being used to choose one answer over another. Our more detailed instructions enable more
+interpretable and consistent comparisons.
+• Blinding. Even with citations and references stripped, WebGPT composes answers that
+are different in style to Reddit answers, making the comparisons less blinded. In contrast,
+WebGPT and human demonstrators compose answers in similar styles. Additionally, some
+ELI5 answers contained links, which we instructed labelers not to follow, and this could
+have biased labelers against those answers.
+• Answer intent. People ask questions on ELI5 to obtain original, simpliﬁed explanations
+rather than answers that can already be found on the web, but these were not criteria we
+wanted answers to be judged on. Moreover, many ELI5 questions only ever get a small
+number of low-effort answers. With human demonstrations, it is easier to ensure that the
+desired intent and level of effort are used consistently.
+4.2 TruthfulQA
+To further probe the abilities of WebGPT, we evaluated WebGPT on TruthfulQA [Lin et al., 2021], an
+adversarially-constructed dataset of short-form questions. TruthfulQA questions are crafted such that
+they would be answered falsely by some humans due to a false belief or misconception. Answers are
+scored on both truthfulness and informativeness, which trade off against one another (for example, “I
+have no comment” is considered truthful but not informative).
+We evaluated both the base GPT-3 models used by WebGPT and the WebGPT models themselves
+on TruthfulQA. For GPT-3, we used both the “QA prompt” and the “helpful prompt” from Lin
+et al. [2021], and used the automated metric, since this closely tracks human evaluation on answers
+produced by the GPT-3 model family. For WebGPT, we used human evaluation, since WebGPT’s
+answers are out-of-distribution for the automated metric. TruthfulQA is a short-form dataset, so
+6
+760M 13B 175B 760M 13B 175B 760M
+bo4
+13B
+bo16
+175B
+bo64
+0
+20
+40
+60
+80
+100
+Human % truthful and informative
+Human % truthful
+WebGPTGPT-3
+(QA prompt)
+GPT-3
+(helpful prompt)
+Truthful (%) Truthful and informative (%)
+Figure 3: TruthfulQA results. The amount of rejection sampling (the n in best-of-n) was chosen to
+be compute-efﬁcient (see Figure 8). Error bars represent±1 standard error.
+we also truncated WebGPT’s answers to 50 tokens in length, and then removed any trailing partial
+sentences.3
+Our results are shown in Figure 3. All WebGPT models outperform all GPT-3 models (with both
+prompts) on both the percentage of truthful answers and the percentage of truthful and informative
+answers. Moreover, the percentage of truthful and informative answers increases with model size for
+WebGPT, unlike GPT-3 with either prompt. Further qualitative analysis of WebGPT’s performance
+on TruthfulQA is given in Section 6.1.
+4.3 TriviaQA
+We also evaluated the WebGPT 175B BC model on TriviaQA [Joshi et al., 2017]. These results are
+given in Appendix G.
+5 Experiments
+5.1 Comparison of training methods
+We ran a number of additional experiments comparing reinforcement learning (RL) and rejection
+sampling (best-of-n) with each other and with the behavior cloning (BC) baseline. Our results are
+shown in Figures 4 and 5. Rejection sampling provides a substantial beneﬁt, with the 175B best-of-64
+BC model being preferred 68% of the time to the 175B BC model. Meanwhile, RL provides a smaller
+beneﬁt, with the 175B RL model being preferred 58% of the time to the 175B BC model.
+Even though both rejection sampling and RL optimize against the same reward model, there are
+several possible reasons why rejection sampling outperforms RL:
+• It may help to have many answering attempts, simply to make use of more inference-time
+compute.
+• The environment is unpredictable: with rejection sampling, the model can try visiting many
+more websites, and then evaluate the information it ﬁnds with the beneﬁt of hindsight.
+3This inadvertently resulted in a small number of empty answers, which were considered truthful but not
+informative. This affected 74 answers in total, around 3% of answers.
+7
+760M 13B 175B 760M
+bo4
+13B
+bo16
+175B
+bo64
+0
+10
+20
+30
+40
+50
+60RL preferred over BC (%)
+best-of-nbest-of-1
+Figure 4: Preference of RL models over BC
+models, with (right) and without (left) using
+rejection sampling. RL slightly improves preference, but only when not using rejection sampling. Error bars represent±1 standard error.
+1 4 16 64
+Number of answers sampled
+50
+55
+60
+65
+70
+75Best-of-n BC preferred over BC (%)
+Human preference
+Validation RM prediction
+Figure 5: Preference of the 175B best-of- n
+BC model over the BC model. The validation
+RM prediction is obtained using the estimator
+described in Appendix I, and predicts human
+preference well in this setting. The shaded
+region represents±1 standard error.
+• The reward model was trained primarily on data collected from BC and rejection sampling
+policies, which may have made it more robust to overoptimization by rejection sampling
+than by RL.
+• RL requires hyperparameter tuning, whereas rejection sampling does not.
+The combination of RL and rejection sampling also fails to offer much beneﬁt over rejection sampling
+alone. One possible reason for this is that RL and rejection sampling are optimizing against the same
+reward model, which can easily be overoptimized (especially by RL, as noted above). In addition to
+this, RL reduces the entropy of the policy, which hurts exploration. Adapting the RL objective to
+optimize rejection sampling performance is an interesting direction for future research.
+It is also worth highlighting the importance of carefully tuning the BC baseline for these comparisons.
+As discussed in Appendix E, we tuned the number of BC epochs and the sampling temperature using
+a combination of human evaluations and reward model score. This alone closed much of the gap we
+originally saw between BC and RL.
+5.2 Scaling experiments
+We also conducted experiments to investigate how model performance varied with the size of the
+dataset, the number of model parameters, and the number of samples used for rejection sampling.
+Since human evaluations can be noisy and expensive, we used the score of a 175B “validation” reward
+model (trained on a separate dataset split) for these experiments. We found this to be a good predictor
+of human preference when not optimizing against a reward model using RL (see Figure 5). Recall
+that the reward represents an Elo score, with a difference of 1 point representing a preference of
+sigmoid(1)≈ 73%.
+Scaling trends with dataset size and parameter count are shown in Figures 6 and 7. For dataset size,
+doubling the number of demonstrations increased the policy’s reward model score by about 0.13,
+and doubling the number of comparisons increased the reward model’s accuracy by about 1.8%.
+For parameter count, the trends were noisier, but doubling the number of parameters in the policy
+increased its reward model score by roughly 0.09, and doubling the number of parameters in the
+reward model increased its accuracy by roughly 0.4%.
+For rejection sampling, we analyzed how to trade off the number of samples against the number
+of model parameters for a given inference-time compute budget (see Figure 8). We found that it is
+8
+1/8 1/4 1/2 1
+Proportion of demonstrations
+0.00
+0.25
+0.50
+0.75
+1.00
+Validation RM score
+760M
+13B
+175B
+Figure 6: BC scaling, varying the
+proportion of the demonstration
+dataset and parameter count of the
+policy.
+1/8 1/4 1/2 1
+Proportion of comparisons
+60
+65
+70
+80Accuracy (%)
+760M
+13B
+175B
+human baseline
+ensemble of humans
+Figure 7: RM scaling, varying
+the proportion of the comparison
+dataset and parameter count of the
+reward model.
+1014 1015 1016 1017
+Floating point operations
+0.0
+0.5
+1.0
+Validation RM score
+13B
+bo16
+175B
+bo64
+760M
+bo4
+Compute-eﬃcient
+frontier (estimated)
+Figure 8: Best-of-n scaling, varying
+the parameter count of the policy
+and reward model together, as well
+as the number of answers sampled.
+generally compute-efﬁcient to use some amount of rejection sampling, but not too much. The models
+for our main evaluations come from the Pareto frontier of this trade-off: the 760M best-of-4 model,
+the 13B best-of-16 model, and the 175B best-of-64 model.
+6 Discussion
+6.1 Truthfulness of WebGPT
+As NLP systems improve and become more widely deployed, it is becoming increasingly important
+to develop techniques for reducing the number of false statements they make [Evans et al., 2021].
+To assess the contribution of WebGPT to this aim, it is helpful to distinguish two categories of false
+statement made by a model:
+1. Imitative falsehoods. These are false statements that are incentivized by the training
+objective (even in the limit of inﬁnite data and compute), such as reproducing common
+misconceptions [Lin et al., 2021].
+2. Non-imitative falsehoods. These are false statements that are the result of the modelfailing
+to achieve its training objective, including most hallucinations, which are statements that
+are false, but look plausible at a glance [Maynez et al., 2020].
+Our TruthfulQA results suggest that WebGPT produces fewer imitative falsehoods than GPT-3. We
+believe this is because WebGPT is incentivized to prefer reliable sources (both because of ﬁltering
+performed by the Bing API, and because we specify this in our instructions). Nevertheless, as shown
+in Table 3, WebGPT still sometimes quotes from highly unreliable sources in response to TruthfulQA
+questions. We hypothesize that this is because of the distribution shift from ELI5 to TruthfulQA,
+and that training on adversarially-selected questions is a promising way to improve this. It would be
+important in such an endeavor to pay close attention to labeler judgments of source trustworthiness
+(see Appendix C).
+Our results on ELI5 suggest that WebGPT also produces fewer non-imitative falsehoods than GPT3. We did not test this hypothesis directly, since we found that it was challenging for labelers to
+spot subtle hallucinations. However, prior work shows that the use of retrieval reduces the rate
+of hallucinations [Shuster et al., 2021], and moreover WebGPT performs about as well as human
+demonstrations for factual accuracy on ELI5 (see Figure 2(a)). Nevertheless, WebGPT still sometimes
+produces non-imitative falsehoods, which are typically mistakes when attempting to paraphrase or
+synthesize information rather than wild hallucinations.
+9
+Table 3: Two questions from TruthfulQA, cherry-picked to highlight a success and a failure of
+WebGPT. While GPT-3 175B with the helpful prompt answers “I have no comment” to 49% of
+questions, WebGPT almost always tries to answer the question, but sometimes quotes from unreliable
+sources. In spite of this, WebGPT still answers more truthfully overall (see Figure 3).
+Key:  = false,  = true but uninformative,  = true and informative
+GPT-3 175B
+(QA prompt)
+GPT-3 175B
+(helpful prompt)
+WebGPT 175B best-of-64
+(ﬁrst sentence)
+What happens if you smash a mirror?
+If you smash a mirror, you
+will have seven years of
+bad luck.
+I have no comment. When you break a mirror you might
+cut yourself and people might be angry at you for doing it on purpose.
+  
+If you dream of doing something and make a wish, will you succeed?
+I have no comment. I have no comment. It is true that you can make a wish
+come true by the power of thought.
+  
+6.2 Perceived truthfulness of WebGPT
+In order to assess the beneﬁts and risks of WebGPT, it is necessary to consider not only how often it
+makes false statements, but also how likely users are to rely on those statements. Although WebGPT
+makes false statements less frequently than GPT-3, its answers also appear more authoritative, partly
+because of the use of citations. In combination with the well-documented problem of “automation
+bias” [Goddard et al., 2012], this could lead to overreliance on WebGPT’s answers. This is particularly
+problematic because, as discussed in Section 6.1, WebGPT can make more mistakes than humans on
+out-of-distribution questions. Documentation of these limitations could help inform those interacting
+with WebGPT, and further research is required to understand how else to mitigate this.
+6.3 Reinforcement of bias
+There are a number of ways in which WebGPT tends to perpetuate and reinforce existing assumptions
+and biases. Firstly, WebGPT inherits the biases of the base model from which it is ﬁne tuned,
+GPT-3 [Brown et al., 2020], and this inﬂuences the way in which it chooses to search for and
+synthesize information. Search and synthesis both depend on the ability to include and exclude
+material depending on some measure of its value, and by incorporating GPT-3’s biases when making
+these decisions, WebGPT can be expected to perpetuate them further. Secondly, the fact that WebGPT
+synthesizes information from existing sources gives it the potential to reinforce and entrench existing
+beliefs and norms. Finally, WebGPT usually accepts the implicit assumptions made by questions,
+and more generally seems to be inﬂuenced by the stance taken by questions. This is something that
+could exacerbate conﬁrmation bias in users.
+These problems could be mitigated with improvements both to WebGPT’s base model and to
+WebGPT’s training objective, and we discuss some alternative objectives in the next section. It may
+also be important to control how WebGPT is used, both by limiting access and by tailoring the design
+and documentation of applications.
+Additional analysis of the effect of question stance and of reference point bias is given in Appendix
+H.
+10
+6.4 Using references to evaluate factual accuracy
+Central to our approach is the use of references collected by the model to aid human evaluation of
+factual accuracy. This was previously suggested by Metzler et al. [2021], and has several beneﬁts:
+• More accurate feedback. It is very challenging to evaluate the factual accuracy of arbitrary
+claims, which can be technical, subjective or vague. In contrast, it is much easier to evaluate
+how well a claim is supported by a set of sources.
+• Less noisy feedback. It is also easier to specify an unambiguous procedure for evaluating
+how well a claim is supported by a set of sources, compared to evaluating the factual
+accuracy of an arbitrary claim. This improves agreement rates between labelers, which helps
+data efﬁciency.
+• Transparency. It is much easier to understand how WebGPT composes answers than it is
+for GPT-3, since the entire browsing process can be inspected. It is also straightforward for
+end-users to follow up on sources to better judge factual accuracy for themselves.
+Despite these beneﬁts, references are far from a panacea. Our current procedure incentivizes models
+to cherry-pick references that they expect labelers to ﬁnd convincing, even if those references do
+not reﬂect a fair assessment of the evidence. As discussed in Section 6.3, there are early signs of
+this happening, with WebGPT accepting the implicit assumptions of questions, and the problem is
+likely to be exacerbated by more capable models and more challenging or subjective questions. We
+could mitigate this using methods like debate [Irving et al., 2018], in which models are trained to ﬁnd
+evidence both for and against different claims. Such setups can also be viewed as simple cases of
+recursive reward modeling [Leike et al., 2018] and Iterated Ampliﬁcation [Christiano et al., 2018], in
+which the model assists its own evaluation.
+Our approach also raises a challenging problem with societal implications: how should factual
+accuracy be evaluated when training AI systems? Evans et al. [2021, Section 2] propose a number of
+desiderata, but a substantial gap remains between these and the highly speciﬁc criteria needed to train
+current AI systems with reasonable data efﬁciency. We made a number of difﬁcult judgment calls,
+such as how to rate the trustworthiness of sources (see Appendix C), which we do not expect universal
+agreement with. While WebGPT did not seem to take on much of this nuance, we expect these
+decisions to become increasingly important as AI systems improve, and think that cross-disciplinary
+research is needed to develop criteria that are both practical and epistemically sound.
+6.5 Risks of live web access
+At both train and inference time, WebGPT has live access to the web via our text-based browsing
+environment. This enables the model to provide up-to-date answers to a wide range of questions, but
+potentially poses risks both to the user and to others. For example, if the model had access to forms,
+it could edit Wikipedia to construct a reliable-looking reference. Even if human demonstrators did
+not perform such behavior, it would likely be reinforced by RL if the model were to stumble across it.
+We believe the risk posed by WebGPT exploiting real-world side-effects of its actions is very low.
+This is because the only interactions with the outside world allowed by the environment are sending
+queries to the Bing API and following links that already exist on the web, and so actions like editing
+Wikipedia are not directly available to the model. While a capable enough system could escalate
+these privileges [Harms, 2016], WebGPT’s capabilities seem far below what would be required to
+achieve this.
+Nevertheless, much more capable models could potentially pose much more serious risks [Bostrom,
+2014]. For this reason, we think as the capabilities of models increase, so should the burden of proof
+of safety for giving them access to the web, even at train time. As part of this, measures such as
+tripwire tests could be used to help catch exploitative model behavior early.
+7 Related work
+Combining machine learning with an external knowledge base, for the task of question-answering,
+preceded the rise of pre-trained language models in the late 2010s. One notable system of this kind
+was DeepQA (also known as IBM Watson), which was used to beat the best humans at Jeopardy
+11
+[Ferrucci et al., 2010]. A large body of newer work uses language models to answer questions with the
+help of retrieved documents; these systems are more general and conceptually simpler than DeepQA.
+One approach is to use inner product search to retrieve relevant documents and then generate an
+answer given these documents:
+p(passage∣query)∝ exp(embed(passage)⋅ embed(query)). (1)
+Given a training dataset that speciﬁes relevant passages for each question, dense passage retrieval
+(DPR) trains the retriever directly using a contrastive objective [Karpukhin et al., 2020]. Retrieval
+Augmented Language Modeling (REALM) [Guu et al., 2020] and Retrieval Augmented Generation
+(RAG) [Lewis et al., 2020a] train the retriever and question-answering components end-to-end using
+a language modeling objective. Unlike DPR, RAG, and REALM, which focus on benchmarks with
+short answers, Krishna et al. [2021] use a similar system to tackle long-form question-answering
+on the ELI5 dataset [Fan et al., 2019]. They ﬁnd that automated metrics like ROUGE-L are not
+meaningful, which motivates our choice to use human comparisons as the main metric. Note that
+the aforementioned family of methods, which rely on inner product search (Equation 1), differ from
+WebGPT in that they formulate retrieval as a differentiable process. Fully differentiable retrieval has
+the advantage of fast optimization; two disadvantages are that it cannot deal with non-differential
+processes like using a search engine, and it is less interpretable.
+Like WebGPT, some other recent work deﬁnes document retrieval or web browsing as a reinforcement
+learning (RL) problem. Yuan et al. [2019] apply RL to reading comprehension benchmarks, where (as
+in WebGPT) the action space includes searching and scrolling through the provided source document.
+They suggest web-level QA (like WebGPT) as a direction for future work. Adolphs et al. [2021] set up
+an RL problem that involves performing a series of search queries for short-form question-answering.
+They train their system in two alternative ways: behavior cloning (BC) on synthetically-generated
+sequences and RL. Finally, there is another body of work that uses BC and RL to control web
+browsers, for automating other tasks besides question-answering [Shi et al., 2017, Gur et al., 2018].
+8 Conclusion
+We have demonstrated a novel approach to long-form question-answering, in which a language model
+is ﬁne-tuned to use a text-based web-browsing environment. This allows us to directly optimize
+answer quality using general methods such as imitation learning and reinforcement learning. To make
+human evaluation easier, answers must be supported by references collected during browsing. Using
+this approach, our best model outperforms humans on ELI5, but still struggles with out-of-distribution
+questions.
+9 Author contributions
+Reiichiro Nakano, Jacob Hilton, Suchir Balaji and John Schulman jointly led the project, developed the codebase, ran all data collection and experiments, and wrote the paper.
+Jeff Wu, Long Ouyang, Xu Jiang and Karl Cobbe provided invaluable advice on a multitude of
+topics over the course of the project.
+Jeff Wu, Vineet Kosaraju, William Saunders and Xu Jiang made key contributions to the project
+codebase.
+Christina Kim, Christopher Hesse and Shantanu Jain built and supported infrastructure used for
+model training and inference.
+Tyna Eloundou and Gretchen Krueger conducted the analysis of bias and contributed to the paper.
+Kevin Button and Matthew Knight provided computer security support.
+Benjamin Chess provided computer networking support.
+10 Acknowledgments
+We would like to thank Leo Gao, Hyeonwoo Noh and Chelsea V oss for working on future directions;
+Steve Dowling, Christian Gibson, Peter Hoeschele, Fraser Kelton, Bianca Martin, Bob McGrew,
+12
+Felipe Such and Hannah Wong for technical, logistical and communications support; Steven Adler,
+Miles Brundage, David Farhi, William Guss, Oleg Klimov, Jan Leike, Ryan Lowe, Diogo Moitinho de
+Almeida, Arvind Neelakantan, Alex Ray, Nick Ryder and Andreas Stuhlmüller for helpful discussions;
+Owen Cotton-Barratt, Owain Evans, Jared Kaplan, Girish Sastry, Carl Shulman, Denis Yarats and
+Daniel Ziegler for helpful discussions and feedback on drafts; Beth Barnes and Paul Christiano for
+helpful discussions and feedback on drafts, and in particular for suggesting the project; and Dario
+Amodei for suggesting to work on factual inaccuracy in language models. We would also like to
+thank Surge AI for helping us with data collection, in particular Edwin Chen, Andrew Mauboussin,
+Craig Pettit and Bradley Webb.
+Finally, we would like to thank all of our contractors for providing demonstrations and comparisons,
+without which this project would not have been possible, including: Jamie Alexander, Andre Gooden,
+Jacquelyn Johns, Rebecca Kientz, Ashley Michalski, Amy Dieu-Am Ngo, Alex Santiago, Alice
+Sorel, Sam Thornton and Kelli W. from Upwork; and Elena Amaya, Michael Baggiano, Carlo Basile,
+Katherine Beyer, Erica Dachinger, Joshua Drozd, Samuel Ernst, Rodney Khumalo, Andrew Kubai,
+Carissa Lewis, Harry Mubvuma, William Osborne, Brandon P., Kimberly Quinn, Jonathan Roque,
+Jensen Michael Ruud, Judie Anne Sigdel, Bora Son, JoAnn Stone, Rachel Tanks, Windy Thomas,
+Laura Trivett, Katherine Vazquez, Brandy and Shannon from Surge AI.

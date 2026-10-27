@@ -5,6 +5,8 @@ Writes:
   data/corpus/<arxiv_id>.txt   extracted full text (references section removed)
   data/papers.json             metadata used for citations and the Data agent's SQLite table
 Each ID is checked against an expected title keyword so a wrong ID can never slip into the corpus.
+Metadata comes from each paper's arxiv.org/abs page (the export API rate-limits bulk queries with HTTP 429).
+Safe to re-run: finished papers are skipped.
 """
 from __future__ import annotations
 
@@ -12,10 +14,17 @@ import json
 import re
 import sys
 import time
+import ssl
+import urllib.error
 import urllib.request
+from html import unescape
 from pathlib import Path
 
-import arxiv
+import certifi
+
+# certifi's CA bundle: python.org macOS builds ship without system certificates.
+_SSL = ssl.create_default_context(cafile=certifi.where())
+
 from pypdf import PdfReader
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -94,62 +103,97 @@ def clean(text: str) -> str:
     return (text[: m.start()] if m else text).strip()
 
 
-def download(url: str, dest: Path) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "csci599-a2-corpus-fetch/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = resp.read()
-    if not data.startswith(b"%PDF"):
-        raise ValueError(f"{url} did not return a PDF")
-    dest.write_bytes(data)
+UA = {"User-Agent": "csci599-a2-corpus-fetch/1.1 (course project; polite, 1 request / 3 s)"}
+
+
+def http_get(url: str, attempts: int = 4) -> bytes:
+    """GET with backoff on 429/5xx. arXiv rate-limits bursts, so waits grow 10s -> 30s -> 60s."""
+    for i in range(attempts):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=120, context=_SSL) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 500, 502, 503, 504) or i == attempts - 1:
+                raise
+            wait = int(e.headers.get("Retry-After") or (10, 30, 60, 90)[i])
+            print(f"    HTTP {e.code} from arXiv, waiting {wait}s then retrying...", flush=True)
+            time.sleep(wait)
+        except (urllib.error.URLError, TimeoutError):
+            if i == attempts - 1:
+                raise
+            time.sleep(10)
+    raise RuntimeError("unreachable")
+
+
+def _meta(html: str, name: str) -> list[str]:
+    """Values of <meta name=... content=...> tags, whatever the attribute order or quote style."""
+    out = []
+    for tag in re.findall(r"<meta\b[^>]*>", html, re.I):
+        attrs = {k: v1 or v2 for k, v1, v2 in re.findall(r"""(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')""", tag)}
+        if attrs.get("name") == name and "content" in attrs:
+            out.append(unescape(attrs["content"]))
+    return out
+
+
+def parse_abs_page(html: str, aid: str) -> dict:
+    """Metadata from the arxiv.org/abs page's citation <meta> tags (no export API needed)."""
+    title = (_meta(html, "citation_title") or [""])[0].strip()
+    authors = []
+    for a in _meta(html, "citation_author"):
+        last, _, first = a.partition(", ")
+        authors.append(f"{first} {last}".strip() if first else a.strip())
+    date = (_meta(html, "citation_date") or ["1900/01/01"])[0].replace("/", "-")
+    abstract = " ".join((_meta(html, "citation_abstract") or [""])[0].split())
+    cat = re.search(r'class="primary-subject">[^<]*\(([^)]+)\)', html)
+    return {"arxiv_id": aid, "title": title, "authors": authors, "first_author": authors[0] if authors else "",
+            "year": int(date[:4]), "published": date[:10], "primary_category": cat.group(1) if cat else "",
+            "abstract": abstract, "url": f"https://arxiv.org/abs/{aid}"}
 
 
 def main() -> int:
     CORPUS.mkdir(parents=True, exist_ok=True)
     RAW.mkdir(parents=True, exist_ok=True)
-    client = arxiv.Client(page_size=50, delay_seconds=3.0, num_retries=5)
-    ids = [p[0] for p in PAPERS]
-    expect = {p[0]: (p[1], p[2]) for p in PAPERS}
+    meta_cache = RAW / "meta"
+    meta_cache.mkdir(exist_ok=True)
     meta, skipped = [], []
-    for r in client.results(arxiv.Search(id_list=ids, max_results=len(ids))):
-        aid = re.sub(r"v\d+$", "", r.get_short_id())
-        keyword, topic = expect[aid]
-        if keyword.lower() not in r.title.lower():
-            skipped.append(f"{aid}: title '{r.title}' does not contain '{keyword}'")
-            continue
-        txt_path = CORPUS / f"{aid}.txt"
-        if not txt_path.exists():
-            pdf_path = RAW / f"{aid}.pdf"
-            try:
+    for n, (aid, keyword, topic) in enumerate(PAPERS, 1):
+        try:
+            cache = meta_cache / f"{aid}.json"          # resume: never re-fetch what we already have
+            if cache.exists():
+                m = json.loads(cache.read_text())
+            else:
+                m = parse_abs_page(http_get(f"https://arxiv.org/abs/{aid}").decode("utf-8", "replace"), aid)
+                time.sleep(3)
+            if keyword.lower() not in m["title"].lower():
+                skipped.append(f"{aid}: title '{m['title']}' does not contain '{keyword}'")
+                continue
+            cache.write_text(json.dumps(m))
+            txt_path = CORPUS / f"{aid}.txt"
+            if not txt_path.exists():
+                pdf_path = RAW / f"{aid}.pdf"
                 if not pdf_path.exists():
-                    download(f"https://arxiv.org/pdf/{aid}", pdf_path)
-                    time.sleep(3)  # arXiv asks for at most one request every 3 seconds
+                    data = http_get(f"https://arxiv.org/pdf/{aid}")
+                    if not data.startswith(b"%PDF"):
+                        raise ValueError("arXiv did not return a PDF")
+                    pdf_path.write_bytes(data)
+                    time.sleep(3)
                 pages = [(p.extract_text() or "") for p in PdfReader(str(pdf_path)).pages]
                 txt_path.write_text(clean("\n".join(pages)), encoding="utf-8")
-            except Exception as e:  # noqa: BLE001
-                skipped.append(f"{aid}: download/extract failed: {e}")
-                continue
-        meta.append({
-            "arxiv_id": aid,
-            "title": r.title.strip(),
-            "authors": [a.name for a in r.authors],
-            "first_author": r.authors[0].name if r.authors else "",
-            "year": r.published.year,
-            "published": r.published.date().isoformat(),
-            "primary_category": r.primary_category,
-            "topic": topic,
-            "abstract": " ".join(r.summary.split()),
-            "url": f"https://arxiv.org/abs/{aid}",
-            "chars": len(txt_path.read_text(encoding="utf-8")),
-        })
-        print(f"ok  {aid}  {r.title[:70]}")
-    meta.sort(key=lambda m: m["arxiv_id"])
+        except Exception as e:  # noqa: BLE001 - one bad paper must not stop the rest
+            skipped.append(f"{aid}: {type(e).__name__}: {str(e)[:120]}")
+            print(f"FAIL {n:2d}/{len(PAPERS)} {aid}  {skipped[-1]}", flush=True)
+            continue
+        meta.append({**m, "topic": topic, "chars": len(txt_path.read_text(encoding="utf-8"))})
+        print(f"ok   {n:2d}/{len(PAPERS)} {aid}  {m['title'][:65]}", flush=True)
+
+    meta.sort(key=lambda x: x["arxiv_id"])
     (ROOT / "data" / "papers.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"\n{len(meta)} papers written to data/corpus/, metadata in data/papers.json")
     for s in skipped:
         print("SKIPPED", s)
-    missing = set(ids) - {m["arxiv_id"] for m in meta} - {s.split(":")[0] for s in skipped}
-    for m in sorted(missing):
-        print("MISSING (not returned by arXiv)", m)
+    if skipped:
+        print("Re-run the script to retry skipped papers; finished ones are not downloaded again.")
     return 0 if len(meta) >= 40 else 1
 
 

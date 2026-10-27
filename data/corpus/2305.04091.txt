@@ -1,0 +1,552 @@
+Plan-and-Solve Prompting: Improving Zero-Shot Chain-of-Thought
+Reasoning by Large Language Models
+Lei Wang1 Wanyu Xu2 Yihuai Lan Zhiqiang Hu 3 Yunshi Lan4
+Roy Ka-Wei Lee3 Ee-Peng Lim1∗
+1Singapore Management University
+2Southwest Jiaotong University
+3Singapore University of Technology and Design
+4East China Normal University
+Abstract
+Large language models (LLMs) have recently
+been shown to deliver impressive performance
+in various NLP tasks. To tackle multi-step reasoning tasks, few-shot chain-of-thought (CoT)
+prompting includes a few manually crafted
+step-by-step reasoning demonstrations which
+enable LLMs to explicitly generate reasoning
+steps and improve their reasoning task accuracy. To eliminate the manual effort, Zeroshot-CoT concatenates the target problem statement with “Let’s think step by step” as an input prompt to LLMs. Despite the success of
+Zero-shot-CoT, it still suffers from three pitfalls: calculation errors, missing-step errors,
+and semantic misunderstanding errors. To address the missing-step errors, we propose Planand-Solve (PS) Prompting. It consists of two
+components: first, devising a plan to divide the
+entire task into smaller subtasks, and then carrying out the subtasks according to the plan.
+To address the calculation errors and improve
+the quality of generated reasoning steps, we
+extend PS prompting with more detailed instructions and derive PS+ prompting. We evaluate our proposed prompting strategy on ten
+datasets across three reasoning problems. The
+experimental results over GPT-3 show that our
+proposed zero-shot prompting consistently outperforms Zero-shot-CoT across all datasets by
+a large margin, is comparable to or exceeds
+Zero-shot-Program-of-Thought Prompting, and
+has comparable performance with 8-shot CoT
+prompting on the math reasoning problem. The
+code can be found at https://github.com/AGIEdgerunners/Plan-and-Solve-Prompting.
+1 Introduction
+Large language models (LLMs) (Brown et al.,
+2020; Thoppilan et al., 2022; Chowdhery et al.,
+2022) have recently proven highly effective in various NLP tasks. Unlike the previous pre-trained
+language models (PTMs) (Devlin et al., 2019; Liu
+∗Corresponding author.
+5
+10
+15
+20
+25
+30
+35Ratio (%)
+7
+12
+27
+Calculation Error
+Step Missing Error
+Semantic Misunderstanding
+Figure 1: Error analysis of 46 GSM8K problems with incorrect answers returned by Zero-shot-CoT using GPT3 LLM. Following Wei et al. (2022b) and Wang et al.
+(2022a), we assign “Calculation Error” (7%), “Step
+Missing Error” (12%), or “Semantic misunderstanding
+Error” (27%) to each incorrect answer.
+et al., 2019), these LLMs are typically provided as
+a service, with no access to model parameters due
+to commercial considerations and potential risks of
+misuse (Sun et al., 2022). Thus, it is challenging
+to fine-tune LLMs for downstream tasks (He et al.,
+2021; Houlsby et al., 2019; Devlin et al., 2019).
+Instead, we leverage LLMs to solve complex reasoning problems by eliciting their strong reasoning
+abilities over their embedded knowledge using instructions (or trigger sentences). So far, LLMs have
+shown impressive abilities to solve new reasoning
+problems by simply conditioning them on a few
+illustrative examples (i.e., few-shot learning) or a
+prompt to solve new problems without illustrative
+examples (i.e., zero-shot learning).
+To tackle multi-step complex reasoning tasks using LLMs, Wei et al. (2022b) proposes few-shot
+chain-of-thought (CoT) prompting, which enables
+LLMs to explicitly generate the intermediate reasoning steps before predicting the final answer with
+a few manual step-by-step reasoning demonstration examples. In (Kojima et al., 2022), Zero-shot
+CoT eliminates the need for manually crafted examples in prompts by appending “Let’s think step
+by step” to the target problem fed to LLMs such
+arXiv:2305.04091v3 [cs.CL] 26 May 2023
+as GPT-3. This simple prompting strategy surprisingly enables LLMs to yield performance similar
+to few-shot CoT prompting.
+Despite the remarkable success of Zero-shotCoT in solving multi-step reasoning tasks, its results on a sample of 100 arithmetic test examples
+still point to three pitfalls (as shown in Figure 1):
+(i) Calculation errors (in 7% of test examples):
+These are errors in the calculation leading to wrong
+answers; (ii) Missing Step errors (in 12% of test
+examples): These occur when some intermediate
+reasoning step(s) is missed-out especially when
+there are many steps involved; (iii) Semantic misunderstanding (in 27% of test examples): There
+are other errors in semantic understanding of the
+problem and coherence of reasoning steps likely to
+be caused by the insufficient capability of LLMs.
+To address the issue of Zero-shot-CoT caused
+by missing reasoning steps, we propose Plan-andSolve (PS) Prompting. It consists of two components: first, devising a plan to divide the entire task
+into smaller subtasks, and then carrying out the subtasks according to the plan. In our experiments, we
+simply replace “Let’s think step by step” of Zeroshot-CoT with “Let’s first understand the problem
+and devise a plan to solve the problem. Then, let’s
+carry out the plan and solve the problem step by
+step” (see Figure 2 (b)).
+To address the calculation errors of Zero-shotCoT and improve the quality of generated reasoning steps, we add more detailed instructions to PS
+prompting. Specifically, we extend it with “extract
+relevant variables and their corresponding numerals” and “calculate intermediate results (pay attention to calculation and commonsense)” instructions.
+This prompting variant is called the PS+ prompting
+strategy (see Figure 3 (b)). Despite its simplicity, PS+ strategy greatly improves the quality of
+the generated reasoning process. Moreover, this
+prompting strategy can be easily customized to
+solve a variety of problems other than math reasoning, such as commonsense and symbolic reasoning
+problems.
+We evaluate our proposed prompting on six
+math reasoning datasets, including AQuA (Ling
+et al., 2017), GSM8K (Cobbe et al., 2021), MultiArith, AddSub, SingleEq, and SV AMP (Patel
+et al., 2021), two commonsense reasoning datasets
+(CommonsenseQA (Talmor et al., 2019) and StrategyQA (Geva et al., 2021)), and two symbolic reasoning datasets (Last Letter and Coin Flip (Wei
+et al., 2022b)). The results of our experiments
+with GPT-3 show that our proposed Zero-shot-PS+
+prompting consistently outperforms Zero-shot-CoT
+across all reasoning problems and datasets by a
+large margin, and is comparable to or exceeds Zeroshot-Program-of-Thought (PoT) Prompting (Chen
+et al., 2022)). Furthermore, although PS+ prompting does not require manual demonstration examples, it has a performance similar to an 8-shot CoT
+prompting in arithmetic reasoning.
+Overall, our results suggest that (a) Zero-shot PS
+prompting is capable of generating a higher-quality
+reasoning process than Zero-shot-CoT prompting,
+as the PS prompts provide more detailed instructions guiding the LLMs to perform correct reasoning tasks; (b) Zero-shot PS+ prompting outperforms Few-shot manual-CoT prompting on some
+datasets, indicating that in some instances it has
+the potential to outperform manual Few-shot CoT
+prompting, which hopefully will spark further development of new CoT prompting approaches to
+elicit reasoning in LLMs.
+2 Plan-and-Solve Prompting
+Overview. We introduce PS prompting, a new
+zero-shot CoT prompting method, which enables
+LLMs to explicitly devise a plan for solving a given
+problem and generate the intermediate reasoning
+process before predicting the final answer for the
+input problem. As opposed to prior few-shot CoT
+approaches where step-by-step few-shot demonstration examples are included in the prompt, the
+zero-shot PS prompting method does not require
+demonstration examples, and its prompt covers
+the problem itself and a simple trigger sentence.
+Similar to Zero-shot-CoT, Zero-shot PS prompting
+consists of two steps. In step 1, the prompt first
+makes an inference using the proposed prompting
+template to generate the reasoning process and the
+answer to a problem. In step 2, it extracts the answer for evaluation by using the answer extraction
+prompting, such as “Therefore, the answer (arabic
+numerals) is”.
+2.1 Step 1: Prompting for Reasoning
+Generation
+To solve the input problem while avoiding errors
+resulting from incorrect calculation and missing
+reasoning steps, this step aims to construct templates to meet the following two criteria:
+• The templates should elicit LLMs to deterFigure 2: Example inputs and outputs of GPT-3 with (a) Zero-shot-CoT prompting, (b) Plan-and-Solve (PS)
+prompting, and (c) answer extraction prompting. While Zero-shot-CoT encourages LLMs to generate multi-step
+reasoning with “Let’s think step by step”, it may still generate wrong reasoning steps when the problem is complex.
+Unlike Zero-shot-CoT, PS prompting first asks LLMs to devise a plan to solve the problem by generating a step-bystep plan and carrying out the plan to find the answer.
+mine subtasks and accomplish the subtasks.
+• The templates should guide LLMs to pay
+more attention to calculations and intermediate results and to ensure that they are correctly
+performed as much as possible.
+To meet the first criterion, we follow Zero-shotCoT and first convert the input data example into
+a prompt with a simple template “Q: [X]. A:
+[T]”. Specifically, the input slot [X] contains
+the input problem statement and a hand-crafted
+instruction is specified in the input slot [T] to
+trigger LLMs to generate a reasoning process that
+includes a plan and steps to complete the plan.
+In Zero-shot-CoT, the instruction in the input
+slot [T] includes the trigger instruction ‘ Let’s
+think step by step”. Our Zero-shot PS prompting
+method instead includes the instructions “ devise
+a plan ” and “ carry out the plan ” as shown in
+Figure 2(b). Thus, the prompt would be “Q:
+[X]. A: Let’s first understand the problem and
+devise a plan to solve the problem. Then, let’s
+carry out the plan and solve the problem step by
+step.”
+We then pass the above prompt to the LLM
+which subsequently outputs a reasoning process. In
+accordance with Zero-shot-CoT, our method uses
+the greedy decoding strategy (1 output chain) for
+generating output by default.
+To meet the second criterion, we extend the planbased trigger sentence with more detailed instructions. Specifically, “pay attention to calculation” is
+added to the trigger sentence to request the LLMs to
+perform calculations as accurately as possible. To
+reduce errors resulting from missing necessary reasoning steps, we include “extract relevant variables
+and their corresponding numerals” to explicitly instruct the LLMs not to ignore relevant information
+in the input problem statement. We hypothesize
+that if the LLMs leave out the relevant and important variables, it is more likely to miss out relevant
+reasoning steps. Correlation analysis of generated
+content of variable and the missing reasoning step
+errors, shown in Figure 5, empirically supports this
+hypothesis (correlation value is less than 0). Additionally, we add “calculate intermediate results”
+to the prompt to enhance LLM’s ability to generate relevant and important reasoning steps. The
+specific example is illustrated in Figure 3(b). At
+the end of Step 1, LLM generates the reasoning
+text which includes the answer. For example, the
+generated reasoning text in Figure 3(b) includes
+“Combined weight of Grace and Alex = 125 + 498
+= 623 pounds”. The strategy of adding specific descriptions to the trigger sentence represents a new
+way to improve zero-shot performance on complex
+reasoning.
+2.2 Step 2: Prompting for Answer Extraction
+Similar to Zero-shot-CoT, we devise another
+prompt in Step 2 to get the LLM to extract the final
+numerical answer from the reasoning text generFigure 3: Example inputs and outputs of GPT-3 with (a) Plan-and-Solve (PS) Prompting and (b) Plan-and-Solve
+prompting with more detailed instructions (PS+ prompting). PS+ prompting greatly improves the quality of the
+generated reasoning process.
+ated in Step 1. This prompt includes the answer extraction instruction appended to the first prompt followed by the LLM generated reasoning text. This
+way, LLM is expected to return the final answer in
+the desired form.
+Based on the example in Figure 3(b), the
+prompt used in Step 2 will include “ Q: Grace
+weighs 125 pounds · · · Variables: Grace:
+125 pounds · · · Answer: Combined weight of
+Grace and Alex = 125 + 498 = 623 pounds.
+Therefore, the answer (arabic numerals) is”. For
+this example, the final answer returned by LLM
+is “623”.
+3 Experimental Setup
+3.1 Benchmarks
+The proposed method is evaluated on the ten benchmark datasets from three categories of reasoning problems: Arithmetic Reasoning: (1) the
+GSM8K (Cobbe et al., 2021) dataset of high quality linguistically diverse grade school math word
+problems created by human problem writers, (2)
+the SV AMP (Patel et al., 2021) benchmark of oneunknown arithmetic word problems for up-to-4
+grade level students by making simple changes
+to a set of problems from another existing dataset,
+(3) the MultiArith (Roy and Roth, 2016) dataset
+of math word problems requiring multiple reasoning steps and operations, (4) the AddSub (Hosseini
+et al., 2014) dataset of addition and subtraction
+arithmetic word problems, (5) the AQUA (Ling
+et al., 2017) dataset of algebraic word problems
+with natural language rationales, and (6) the SingleEq (Koncel-Kedziorski et al., 2015) dataset of
+single-equation grade-school algebra word problems with multiple math operations over nonnegative rational numbers and one variable; Commonsense Reasoning: (7) the CSQA (Talmor et al.,
+2019) benchmark dataset of multiple-choice questions that require different types of commonsense
+knowledge to obtain the correct answers; and (8)
+the StrategyQA (Geva et al., 2021) benchmark
+dataset with questions requiring multi-step reasoning but the reasoning steps are not given. Hence,
+they are to be inferred; Symbolic Reasoning: (9)
+the Last Letter Concatenation (Wei et al., 2022b)
+dataset of questions requiring the last letters of
+words in a name to be concatenated (e.g., “James
+Brown” → “sn”), and (10) the Coin Flip (Wei et al.,
+2022b) dataset of questions on whether a coin is
+still heads up after it is flipped or not flipped based
+on steps given in the questions. Table 1 shows
+dataset statistics.
+Table 1: Details of datasets being evaluated. Math: arithmetic reasoning. CS: commonsense reasoning. Sym.:
+symbolic reasoning.
+Dataset Domain # Samples Ave. words Answer
+MultiArith Math 600 31.8 Number
+AddSub Math 395 31.5 Number
+GSM8K Math 1319 46.9 Number
+AQUA Math 254 51.9 Option
+SingleEq Math 508 27.4 Number
+SV AMP Math 1000 31.8 Number
+CSQA CS 1221 27.8 Option
+StrategyQA CS 2290 9.6 Yes / No
+Last Letters Sym. 500 15.0 String
+Coin Flip Sym. 500 37.0 Yes / No
+3.2 Zero-shot and Few-shot Baselines
+We compare our proposed zero-shot PS and PS+
+prompting methods with three types of prompting baselines: (1) Zero-shot baselines. We include zero-shot-CoT (Kojima et al., 2022) and zeroshot-PoT (Chen et al., 2022). The former appends
+“Let’s think step by step” to the prompt without
+any demonstration examples. The latter uses LLM
+(mainly OpenAI Codex1) to generate a Python program and then derive an answer by executing the
+generated program on a Python interpreter; (2)
+Few-shot with manual demonstrations. ManualCoT (Wei et al., 2022b) creates eight hand-crafted
+examples as demonstrations. (3) Few-shot with automatic demonstrations. Auto-CoT (Zhang et al.,
+2022) automatically selected examples by clustering with diversity and generates reasoning chains
+using zero-shot-CoT to construct demonstrations.
+3.3 Implementations
+Following Auto-CoT (Zhang et al., 2022), we use
+the public GPT-3 (Brown et al., 2020) (175B) as
+the backbone language model, which is one of
+the most widely-used LLMs with public APIs 2.
+Since text-davinci-003 is an upgraded version of text-davinci-002, which can produce higher-quality writing, accommodate more
+complex instructions, and perform better at longerform content generation, We report the results
+using text-davinci-003 engine for GPT-3
+in the main paper. We set the temperature to 0
+(argmax sampling) throughout our experiments for
+the greedy decoding strategy. We also include two
+few-shot baselines, Manual-CoT and Auto-CoT,
+we use 8 demonstration examples for MultiArith,
+GSM8K, AddSub, SingleEq, and SV AMP, 4 ex1https://openai.com/blog/openai-codex/
+2https://beta.openai.com/docs/models/gpt-3
+amples for AQuA and Last Letters, 7 examples
+for CSQA, and 6 examples for StrategyQA as suggested in the original papers, Wei et al. (2022b) and
+Zhang et al. (2022). Evaluation metrics wise, we
+follow Manual-CoT (Wei et al., 2022b) and report
+the accuracy of all methods across datasets.
+4 Experimental Results
+4.1 Main Results
+Arithmetic Reasoning. Table 2 reports the accuracy comparison of our method and existing zeroshot and few-shot methods on the arithmetic reasoning datasets. In the zero-shot setting, our PS+
+prompting (i.e., PS prompting with more detailed
+instructions) consistently outperforms Zero-shotCoT across all arithmetic reasoning datasets by
+a large margin. Specifically, PS+ prompting improves the accuracy over Zero-shot CoT by at least
+5% for all datasets except GSM8K which sees a
+2.9% improvement. The exception could be due to
+GSM8K being a more challenging dataset from the
+linguistics complexity aspect. PS prompting also
+outperforms Zero-shot-CoT across all datasets, and
+enjoys 2.5% higher average accuracy than that of
+Zero-shot CoT.
+Compared with another competitive Zero-shot
+baseline, PoT, the performance of PS(+) and PS
+promptings are still impressive. PS+ prompting outperforms PoT on five out of six arithmetic datasets.
+PS prompting also outperforms PoT on three arithmetic datasets. The results suggest that adding
+more detailed instructions to the prompt can effectively elicit higher-quality reasoning steps from
+LLMs.
+Compared with the few-shot methods, Manual
+CoT and Auto-CoT, PS+ prompting yields an average accuracy (76.7%) slightly lower than ManualCoT (77.6%) but higher than Auto-CoT (75.9%).
+While this is an unfair comparison, this result indicates that zero-shot prompting can outperform fewshot CoT prompting, which hopefully will spark
+further development of new ways with a less manual effort to effectively elicit reasoning in LLMs.
+Commmonsense Reasoning. Table 3 shows the
+results on commonsense reasoning datasets: CommonsenseQA and StrategyQA. We only include
+our better zero-shot PS+ prompting strategy in this
+comparison. Zero-shot PoT is excluded as it does
+not work on this problem. While PS+ prompting underperforms Few-Shot-CoT(Manual) on this
+Table 2: Accuracy comparison on six math reasoning datasets. The best and second best results are boldfaced and
+underlined respectively.
+Setting Method (text-davinci-003) MultiArith GSM8K AddSub AQuA SingleEq SV AMP Average
+Zero-Shot
+CoT 83.8 56.4 85.3 38.9 88.1 69.9 70.4
+PoT 92.2 57.0 85.1 43.9 91.7 70.8 73.5
+PS (ours) 87.2 58.2 88.1 42.5 89.2 72.0 72.9
+PS+ (ours) 91.8 59.3 92.2 46.0 94.7 75.7 76.7
+Few-Shot Manual-CoT 93.6 58.4 91.6 48.4 93.5 80.3 77.6Auto-CoT 95.5 57.1 90.8 41.7 92.1 78.1 75.9
+Table 3: Accuracy on commonsense reasoning datasets.
+Method CSQA StrategyQA
+Few-Shot-CoT (Manual) 78.3 71.2
+Zero-shot-CoT 65.2 63.8
+Zero-shot-PS+ (ours) 71.9 65.4
+Table 4: Accuracy on symbolic reasoning datasets.
+Method Last Letter Coin Flip
+Few-Shot-CoT (Manual) 70.6 100.0
+Zero-shot-CoT 64.8 96.8
+Zero-shot-PS+ (ours) 75.2 99.6
+problem, it consistently outperforms Zero-shotCoT on CommonsenseQA (71.9% vs. 65.2%) and
+StrategyQA (65.4% vs. 63.8%) datasets.
+Symbolic Reasoning. Table 4 shows the accuracy of PS+ prompting against Zero-shot-CoT
+and Few-shot-CoT on symbolic reasoning datasets:
+Last Letters and Coin Flip. Zero-shot PoT is again
+excluded as it is not designed for the problem. On
+Last Letters, our Zero-shot PS+ prompting (75.2%)
+outperforms Manual-CoT (70.6%) and Zero-shotCoT (65.2%). On Coin Flip, Zero-shot PS+ prompting (99.6%) is slightly worse than Manual-CoT
+(100.0%) but outperforms Zero-shot-CoT by a
+good margin (96.8%). More examples from the
+experiment results can be found in Appendix A.2.
+4.2 Analysis
+Results of Prompting with Self-Consistency.
+Self-consistency (Wang et al., 2022b) (SC) is proposed to reduce randomness in LLM’s output by
+generating N reasoning results and determining
+the final answer by majority voting. With SC, the
+methods’ results are usually expected to be consistent and better. Hence, we evaluate Zero-shot
+PS+ prompting with SC on GSM8K and SV AMP
+datasets. We set the temperature to 0.7 and N to
+10 for experiments with SC. Figure 4 shows that
+PS+ prompting with SC (73.7% and 84.4%) substantially outperforms that without SC (58.7% and
+Zero-shot-Cot
+Zero-shot-PS+
+w/o SC w/o SC w/ SCw/ SC
+Figure 4: Results of methods with and without selfconsistency (SC) on GSM8K and SV AMP.
+75.7%) on GSM8K and SV AMP, respectively. The
+former also consistently outperforms Zero-shotCoT with SC (70.7% and 81.7%) on GSM8K and
+SV AMP, respectively, although Zero-shot CoT also
+enjoys improvement with the self consistency approach.
+Effect of Prompts. Table 5 demonstrates a comparison of the performance of 6 different input
+prompts. Prompts 1 and 2 are used in Zero-shot
+CoT and Zero-shot PoT respectively. The rest are
+variations of prompts used in Step 1 of the Zeroshot PS+ prompting strategies with greedy decoding. We observe that Prompt 3 with variables and
+numeral extraction performs worse than Prompt
+1 of Zero-shot-CoT. The reason is that Prompt 3
+doesn’t include instructions for devising and completing a plan. However, the other prompts of
+Zero-shot-PS+ perform well as we add more instructions about intermediate results calculation,
+plan design, and implementation. The above results conclude that LLMs are capable of generating
+high-quality reasoning text when the prompts include more detailed instructions to guide the LLMs.
+More prompts for different reasoning problems can
+be found in Appendix A.1.
+Error Analysis. To qualitatively evaluate the impact of the Zero-shot-PS+ prompting on calculation
+errors and reasoning steps missing errors, we examine the distribution of errors on the GSM8K
+dataset. We first randomly sample 100 problems
+Table 5: Performance comparison of trigger sentences measured on GSM8K and SV AMP datasets with
+text-davinci-003 except for No. 2 ( code-davinci-002). (*1) means the trigger sentence used in
+Zero-shot-CoT (Kojima et al., 2022). (*2) means the trigger sentence used in Zero-shot-PoT (Chen et al., 2022).
+No. Trigger Sentence GSM8K SV AMP
+1 Let’s think step by step. (*1) 56.4 69.9
+2
+import math
+import numpy as np
+# Question: example[’question’]
+# Answer this question by implementing a solver() function.
+def solver():
+# Let’s write a Python program step by step, and then return the answer
+# Firstly, we need define the following variable:
+(*2) 57.0 70.8
+3 Extract variables and assign their corresponding numerals to these variablesfirst and then solve the problem step by step. 50.5 69.5
+4 Firstly, extract variables and their corresponding numerals. Then, calculateintermediate variables. Finally, solve the problem step by step. 54.8 70.8
+5 Let’s first understand the problem and devise a plan to solve the problem.Then, let’s carry out the plan and solve the problem step by step. 58.2 72.0
+6
+Let’s first understand the problem, extract relevant variables and their
+corresponding numerals, and make a plan. Then, let’s carry out the plan,
+calculate intermediate variables (pay attention to correct numerical
+calculation and commonsense), solve the problem step by step, and show
+the answer.
+59.3 75.7
+Table 6: Distribution of error types of 100 examples
+from GSM8K where Zero-shot-CoT, zero-shot PS (Zeroshot-PS) prompting, and zero-shot PS+ prompting get
+incorrect final answers.
+Method Calculation Missing Semantic
+Zero-shot-CoT 7% 12% 27%
+Zero-shot-PS 7% 10% 26%
+Zero-shot-PS+ 5% 7% 27%
+from GSM8K, generate the reasoning text, and
+extract answers using Zero-Shot-CoT, Zero-shotPS, and Zero-shot-PS+ prompting strategies. ZeroShot-CoT generated incorrect final answers for 46
+of the problems, 43 for Zero-shot-PS, and 39 for
+Zero-shot-PS+. Subsequently, we analyze and determine the error types of all these problems as
+shown in Table 6.
+The analysis results show that PS+ prompting
+achieves the least calculation (5%) and missingstep (7%) errors, and semantic understanding errors comparable to Zero-shot-CoT. Zero-shot-PS
+has slightly more errors but is still better than Zeroshot-CoT. Their plan-and-solve prompts thus effectively guide the LLMs to generate clear and
+complete reasoning steps. Moreover, the additional
+detailed instructions in PS+ prompting (i.e., “ extract relevant variables and their corresponding
+numerals” and “calculate intermediate variables”)
+enable the LLMs to generate high-quality reasoning steps leading to fewer calculation errors.
+Correlation Analysis of Generated Reasoning
+and Error Types. To obtain deeper insight into
+the impact of PS+ prompting on error types, we
+examine the correlation between the sub-parts of
+the generated reasoning and error types. Specifically, we analyze the existence of variable definition, reasoning plan, and solution in the generated
+reasoning text and correlate them with the three
+error types. The set of problems used for this analysis study is the same as that used in the earlier
+error type analysis. Figure 5 shows the correlation matrix among the existence of variable definitions, plans, solutions and three different types
+of errors. It is observed that both variable definition and plan existences have a negative correlation
+with calculation errors and missing-reasoning-step
+errors. The Zero-shot-PS+ prompt can further improve the performance of LLMs on mathematical
+reasoning problems by reducing calculation errors
+and missing-reasoning-step errors.
+Exploring the Presence of Plans in PS Predictions. To ascertain the presence of a plan in each
+prediction made by PS, we conducted a random
+sampling of 100 data examples and examined their
+corresponding predictions. Our analysis reveals
+that 90 of the 100 predictions indeed incorporated
+a plan. This observation indicates the emergence
+CalculationStep Missing Semantic
+VariablesPlanSolution
+-0.41 -0.56 0.76
+-0.02 -0.83 0.7
+-0.42 0.076 0.24
+0.8
+0.6
+0.4
+0.2
+0.0
+0.2
+0.4
+0.6
+Figure 5: Correlation analysis of generated reasoning
+and error types of randomly sampled 100 data examples
+from GSM8K for Zero-shot-PS+.
+of strong planning abilities in recent LLMs such as
+GPT-3.5 and GPT-4.
+5 Related Work
+5.1 Reasoning in NLP
+It is well known that complex reasoning problems are challenging for NLP models, and such
+problems include mathematical reasoning (Cobbe
+et al., 2021; Patel et al., 2021; Ling et al., 2017;
+Koncel-Kedziorski et al., 2016) (requiring the ability to understand mathematical concepts, calculation, and multi-step reasoning), commonsense
+reasoning (Talmor et al., 2019; Geva et al., 2021)
+(requiring the ability to make judgments based
+on commonsense knowledge), and logical reasoning (Wei et al., 2022b) (requiring the ability to
+manipulate symbols by applying formal logical
+rules). Before the advent of Large Language models (LLMs), Talmor et al. (2019) trained the NLP
+model using explanations generated by the finetuned GPT model and found that the trained model
+yields better performance on commonsense QA
+problems. Hendrycks et al. (2021) attempted
+to fine-tune pretrained language models with labeled rationale, but found out that these fine-tuned
+models could not easily generate high-quality reasoning steps. Recent work by Wei et al. (2022a)
+showed that LLMs demonstrates strong reasoning
+ability when scaled up to tens of billions of parameters, such as GPT-3 (Brown et al., 2020) and
+PaLM (Chowdhery et al., 2022). These LLMs with
+a few demonstration exemplars can yield impressive performance across different NLP tasks. However, these models still perform poorly in problems
+that require multi-step reasoning. This may be due
+to the fact that the few exemplars provided are insufficient to unlock the LLMs’ capabilities.
+5.2 Prompting Methods
+To exploit the reasoning ability in LLMs, Wei
+et al. (2022b) propose Chain-of-Thought prompting, appending multiple reasoning steps before the
+answer to the input question. With this simple
+few-shot prompting strategy, LLMs are able to perform much better in complex reasoning problems.
+Subsequently, many works (Wang et al., 2022a;
+Suzgun et al., 2022; Shaikh et al., 2022; Saparov
+and He, 2022) propose to further improve CoT
+prompting in different aspects, including prompt
+format (Chen et al., 2022), prompt selection (Lu
+et al., 2022), prompt ensemble (Wang et al., 2022b;
+Li et al., 2022; Weng et al., 2022; Fu et al., 2022),
+problem decomposition (Zhou et al., 2022; Khot
+et al., 2022; Dua et al., 2022; Press et al., 2022),
+and planning (Yao et al., 2022; Huang et al., 2022;
+Wang et al., 2023; Liu et al., 2023; Sun et al., 2023;
+Yao et al., 2023). Chen et al. (2022) introduced
+PoT prompting to use LLMs with code pre-training
+to write a program as a rationale for disentangling
+computation from reasoning. To do away with manual effort, Kojima et al. (2022) proposed Zero-shotCoT to elicit reasoning step generation without
+exemplars. To leverage the benefit of demonstration examples and minimize manual effort, Zhang
+et al. (2022) designed Auto-CoT. It first automatically obtains k examples by clustering the given
+dataset. It then follows Zero-shot-CoT to generate rationales for the selected examples. Finally,
+demonstration examples are constructed by adding
+the generated rationales to selected examples as
+CoT prompts. Our work is different from the above
+works by focusing on eliciting multi-step reasoning
+by LLMs in a zero-shot approach. We ask LLMs
+to write a plan to decompose a complex reasoning
+task into multiple reasoning steps. Furthermore,
+we introduce detailed instructions to the prompt to
+avoid obvious errors in the reasoning steps. We refer readers to the survey (Huang and Chang, 2022)
+for more related works.
+6 Conclusion
+In this paper, we find that Zero-shot-CoT still suffers from three pitfalls: calculation errors, missingreasoning-step errors, and semantic understanding errors. To address these issues, we introduce
+plan-and-solve prompting strategies (PS and PS+
+prompting). They are new zero-shot prompting
+methods that guide LLMs to devise a plan that divides the entire task into smaller subtasks and then
+carries out the subtasks according to the plan. Evaluation on ten datasets across three types of reasoning problems shows PS+ prompting outperforms
+the previous zero-shot baselines and performs on
+par with few-shot CoT prompting on multiple arithmetic reasoning datasets. Overall, our results suggest that (a) Zero-shot PS+ prompting can generate
+a high-quality reasoning process than Zero-shotCoT prompting since the PS prompts can provide
+more detailed instructions guiding the LLMs to perform correct reasoning; (b) Zero-shot PS+ prompting has the potential to outperform manual Fewshot CoT prompting, which hopefully will spark
+further development of new CoT prompting approaches to elicit reasoning in LLMs. Moreover,
+PS(+) prompting is a general idea that can be used
+for non-reasoning tasks, and refining the plan is
+also an interesting idea. We leave them for future
+work.
+7 Limitations
+There are two limitations to this work. First, it takes
+effort to design the prompt to guide the LLMs to
+generate correct reasoning steps. The GPT-3 models are sensitive to the expressions in prompts. Thus
+we need to carefully design the prompts. Second,
+the proposed plan-and-solve prompting can help address the calculation errors and missing-reasoningstep errors, but the semantic misunderstanding errors still remain. We will explore how to address
+semantic misunderstanding errors by prompting
+instead of upgrading LLMs in the future.
+8 Ethics
+We experiment on six math reasoning datasets, including AQuA (Ling et al., 2017), GSM8K (Cobbe
+et al., 2021), MultiArith, AddSub, SingleEq, and
+SV AMP (Patel et al., 2021), two commonsense
+reasoning tasks (CommonsenseQA (Talmor et al.,
+2019) and StrategyQA (Geva et al., 2021)), and
+two symbolic tasks (Last Letter and Coin Flip (Wei
+et al., 2022b)), where GSM8K and SV AMP use
+the MIT License code, AQUA and StrategyQA use
+the Apache-2.0 code, the remaining datasets are
+unspecified.
+The proposed prompts do not collect and use
+personal information about other individuals. The
+prompts we used are listed in Appendix. The
+prompts in this work do not contain any words
+that discriminate against any individual or group.
+In this work, prompts would not negatively impact
+other people’s safety.

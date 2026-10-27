@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
@@ -144,11 +144,12 @@ async def _run_worker(agent: str, state: GraphState) -> dict:
         metric_llm(f"worker:{agent}", used, msg, ms)
         calls = getattr(msg, "tool_calls", None) or []
         if not calls:
-            text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            text = msg.content if isinstance(msg.content, str) else "".join(
+                b.get("text", "") for b in msg.content if isinstance(b, dict))
             if text.strip():
                 notes.append(text.strip())
             break
-        messages.append(AIMessage(content=msg.content, tool_calls=calls))
+        messages.append(msg)   # keep the original message: Gemini 3 needs its thought signature echoed back
         had_error = False
         for call in calls:
             res = await T.execute(agent, call["name"], call.get("args", {}))

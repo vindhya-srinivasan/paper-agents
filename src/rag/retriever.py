@@ -79,7 +79,12 @@ Agent notes:
 Sources:
 {sources}
 
-User question: {question}"""
+User question: {question}
+
+Write the answer now. Citation format is mandatory: put the source number in square brackets right \
+after each factual sentence, e.g. "Self-RAG trains the model to emit reflection tokens [2]." Use only \
+numbers that appear under Sources. If Sources says "(no sources retrieved)", answer from the agent \
+notes without brackets."""
 
 ANSWER_PROMPT = ChatPromptTemplate.from_messages([("system", ANSWER_SYSTEM), ("human", ANSWER_HUMAN)])
 

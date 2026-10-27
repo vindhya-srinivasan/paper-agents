@@ -16,7 +16,9 @@ def env(name: str, default: str = "") -> str:
 
 # ---- LLM providers (two different providers are required by the assignment) ----
 GOOGLE_API_KEY = env("GOOGLE_API_KEY")
-GEMINI_MODEL = env("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = env("GEMINI_MODEL", "gemini-3.5-flash-lite")
+# Tried in order when the primary Gemini model returns 429/503 (each model has its own free-tier quota).
+GEMINI_FALLBACK_MODELS = [m.strip() for m in env("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",") if m.strip()]
 
 NVIDIA_API_KEY = env("NVIDIA_API_KEY")
 NVIDIA_MODEL = env("NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
@@ -43,17 +45,18 @@ TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/?tavilyApiKey={key}"
 STATE_BACKEND = env("STATE_BACKEND", "memory")   # "firestore" on Cloud Run, "memory" for local dev
 FIRESTORE_PROJECT_ID = env("FIRESTORE_PROJECT_ID") or env("GCP_PROJECT_ID")
 FIRESTORE_COLLECTION = env("FIRESTORE_COLLECTION", "sessions")
-HISTORY_TURNS = int(env("HISTORY_TURNS", "6"))
+HISTORY_TURNS = int(env("HISTORY_TURNS", "16"))   # messages (8 question/answer pairs) sent as context
 
 # ---- Orchestration guards ----
 MAX_WORKER_STEPS = int(env("MAX_WORKER_STEPS", "4"))
 WORKER_TOOL_ROUNDS = int(env("WORKER_TOOL_ROUNDS", "2"))
-LLM_TIMEOUT_S = float(env("LLM_TIMEOUT_S", "60"))
+LLM_TIMEOUT_S = float(env("LLM_TIMEOUT_S", "25"))
 
 # ---- Prices (USD per 1M tokens) used for per-query cost estimates. ----
-# Checked 2026-10-24; re-check the provider pricing pages before reporting numbers.
+# List prices checked 2026-10-26 (gemini-3.5-flash-lite paid tier: $0.30 in / $2.50 out per 1M).
+# On the Gemini free tier the actual charge is $0; these estimate what the same traffic would cost if billed.
 PRICES = {
-    "gemini": {"input": float(env("GEMINI_PRICE_IN", "0.375")), "output": float(env("GEMINI_PRICE_OUT", "1.88"))},
+    "gemini": {"input": float(env("GEMINI_PRICE_IN", "0.30")), "output": float(env("GEMINI_PRICE_OUT", "2.50"))},
     # NVIDIA API Catalog hosted endpoints are free (credit-based) for development use.
     "nvidia": {"input": float(env("NVIDIA_PRICE_IN", "0")), "output": float(env("NVIDIA_PRICE_OUT", "0"))},
 }

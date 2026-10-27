@@ -102,9 +102,13 @@ def main() -> None:
     ap.add_argument("--metrics", default="faithfulness,answer_relevancy,context_precision,context_recall")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--skip-ragas", action="store_true", help="only collect answers + latency")
+    ap.add_argument("--rescore", action="store_true",
+                    help="re-score the answers already saved in eval_results/ragas_<label>.json (no new answers)")
+    ap.add_argument("--raise", dest="raise_exc", action="store_true", help="stop on the first RAGAS error (debug)")
     args = ap.parse_args()
     label = args.respond_provider or "routed"
     force_respond(args.respond_provider)
+    out = ROOT / "eval_results" / f"ragas_{label}.json"
 
     qs = json.loads(QUESTIONS.read_text())
     if args.limit:
@@ -122,8 +126,13 @@ def main() -> None:
             await asyncio.sleep(1)       # gentle on free-tier rate limits
         return rows
 
-    rows = asyncio.run(collect())
-    scores = {}
+    if args.rescore:
+        saved = json.loads(out.read_text())
+        rows, scores = saved["rows"], saved.get("scores", {})
+        print(f"Re-scoring {len(rows)} saved answers from {out.name}: {args.metrics}")
+    else:
+        rows = asyncio.run(collect())
+        scores = {}
     if not args.skip_ragas:
         from langchain_google_genai import ChatGoogleGenerativeAI
         from ragas import EvaluationDataset, RunConfig, evaluate
@@ -138,9 +147,13 @@ def main() -> None:
                                            "retrieved_contexts": r["contexts"] or ["(none)"], "reference": r["reference"]}
                                           for r in rows])
         judge = LangchainLLMWrapper(ChatGoogleGenerativeAI(model=config.GEMINI_MODEL, google_api_key=config.GOOGLE_API_KEY,
-                                                           temperature=0))
+                                                           temperature=0),
+                                    # answer_relevancy wants n=3 generations; send 3 separate calls instead of
+                                    # asking Gemini for 3 candidates in one call (Flash-Lite fails on that).
+                                    bypass_n=True)
         res = evaluate(ds, metrics=chosen, llm=judge, embeddings=LangchainEmbeddingsWrapper(get_embeddings()),
-                       run_config=RunConfig(max_workers=2, timeout=180, max_retries=6))
+                       run_config=RunConfig(max_workers=2, timeout=180, max_retries=6),
+                       raise_exceptions=args.raise_exc)
         df = res.to_pandas()
         for name in [c.name for c in chosen]:
             col = df[name].dropna().tolist()
@@ -148,7 +161,6 @@ def main() -> None:
             for r, v in zip(rows, df[name].tolist()):
                 r.setdefault("scores", {})[name] = None if v != v else round(float(v), 3)
 
-    out = ROOT / "eval_results" / f"ragas_{label}.json"
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps({"label": label, "date": time.strftime("%Y-%m-%d"), "gemini_model": config.GEMINI_MODEL,
                                "nvidia_model": config.NVIDIA_MODEL, "judge": config.GEMINI_MODEL,

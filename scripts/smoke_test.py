@@ -9,6 +9,7 @@ eval_results/smoke_<host>.json for the evaluation write-up.
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import uuid
@@ -60,8 +61,8 @@ def main(base: str) -> int:
         checks.append((name, bool(ok), detail))
         print(f"{'PASS' if ok else 'FAIL'}  {name}  {detail}")
 
-    h = httpx.get(f"{base}/healthz", timeout=300).json()
-    print("healthz:", json.dumps(h))
+    h = httpx.get(f"{base}/health", timeout=300).json()
+    print("health:", json.dumps(h))
     check("health: RAG index loaded", str(h.get("rag", "")).startswith("ok"), h.get("rag"))
     check("health: Tavily MCP connected", str(h.get("tavily_mcp", "")).startswith("ok"), h.get("tavily_mcp"))
     check("health: both providers configured", "not configured" not in json.dumps(h.get("providers")), h.get("providers"))
@@ -69,7 +70,7 @@ def main(base: str) -> int:
     r = results["rag"] = chat(base, "How does Self-RAG decide when to retrieve, and what are reflection tokens?", sid)
     check("RAG path: corpus retrieval traced", kinds(r, "rag_retrieval") or kinds(r, "paper_read"))
     check("RAG path: corpus citations with arXiv URLs", any(c["kind"] == "corpus" and "arxiv.org" in c["url"] for c in r["citations"]))
-    check("RAG path: answer cites [n]", "[1]" in r["answer"] or "[2]" in r["answer"], r["answer"][:120])
+    check("RAG path: answer cites [n]", re.search(r"\[\d+\]", r["answer"]), r["answer"][:120])
     check("Streaming: many token events", r["n_tokens_events"] > 5, f"{r['n_tokens_events']} token events")
 
     r = results["live"] = chat(base, "What are the most recent announcements about AI agents this week?", sid)
@@ -102,7 +103,9 @@ def main(base: str) -> int:
     check("Memory: history loaded", kinds(r, "history_loaded") and kinds(r, "history_loaded")[0]["turns"] >= 2)
     check("Memory: answer refers to Self-RAG", "self-rag" in r["answer"].lower() or "reflection" in r["answer"].lower(), r["answer"][:120])
 
-    r = results["failure"] = chat(base, "How does Self-RAG work?", "smoke-fail-" + uuid.uuid4().hex[:4], fail="research")
+    # Break the data agent on a question the supervisor reliably sends to it.
+    r = results["failure"] = chat(base, "How many papers in the corpus were published in 2023?",
+                                  "smoke-fail-" + uuid.uuid4().hex[:4], fail="data")
     check("Failure: worker_error traced", kinds(r, "worker_error"))
     check("Failure: graph still answers + done event", r["answer"] and r["done"], r["answer"][:80])
 

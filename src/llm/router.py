@@ -46,6 +46,7 @@ def set_test_models(models: dict[str, Any]) -> None:
     _test_models.clear()
     _test_models.update(models)
     _cache.clear()
+    _cooldown.clear()
 
 
 def model_name(provider: str) -> str:
@@ -53,31 +54,35 @@ def model_name(provider: str) -> str:
 
 
 def provider_available(provider: str) -> bool:
-    if provider in _test_models:
+    if provider in _test_models or any(k.startswith(provider + ":") for k in _test_models):
         return True
     return bool(config.GOOGLE_API_KEY if provider == "gemini" else config.NVIDIA_API_KEY)
 
 
-def get_chat(provider: str):
+def get_chat(provider: str, model: str | None = None):
+    model = model or model_name(provider)
+    if f"{provider}:{model}" in _test_models:          # tests can fake one specific model
+        return _test_models[f"{provider}:{model}"]
     if provider in _test_models:
         return _test_models[provider]
-    if provider in _cache:
-        return _cache[provider]
+    key = (provider, model)
+    if key in _cache:
+        return _cache[key]
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         llm = ChatGoogleGenerativeAI(
-            model=config.GEMINI_MODEL,
+            model=model,
             google_api_key=config.GOOGLE_API_KEY,
             temperature=0.2,
             timeout=config.LLM_TIMEOUT_S,
-            max_retries=1,
+            max_retries=0,            # quota errors are handled by the model chain below, not by waiting
         )
     else:
         from langchain_openai import ChatOpenAI
 
         llm = ChatOpenAI(
-            model=config.NVIDIA_MODEL,
+            model=model,
             api_key=config.NVIDIA_API_KEY,
             base_url=config.NVIDIA_BASE_URL,
             temperature=0.3,
@@ -85,8 +90,47 @@ def get_chat(provider: str):
             max_retries=1,
             stream_usage=True,
         )
-    _cache[provider] = llm
+    _cache[key] = llm
     return llm
+
+
+# ---- Fallback chain ------------------------------------------------------------------------------
+# Quota / overload errors (429, 503) on one Gemini model -> try the next Gemini model first (each model
+# has its own free-tier quota), so the provider choice made by decide() is preserved when possible.
+# Any other error, or all Gemini models exhausted -> the other provider. Exhausted models are skipped
+# for COOLDOWN_S so later calls don't pay for the same 429 again.
+COOLDOWN_S = 60.0
+_cooldown: dict[str, float] = {}
+
+
+def _is_capacity_error(err: Exception) -> bool:
+    t = f"{type(err).__name__} {err}".lower()
+    return any(k in t for k in ("429", "resource_exhausted", "ratelimit", "rate limit", "quota", "503", "unavailable",
+                                "high demand", "overloaded"))
+
+
+def _models_for(provider: str) -> list[str]:
+    if provider == "gemini":
+        return list(dict.fromkeys([config.GEMINI_MODEL, *config.GEMINI_FALLBACK_MODELS]))
+    return [config.NVIDIA_MODEL]
+
+
+def _chain(decision: "RouteDecision") -> list[tuple[str, str]]:
+    first, other = decision.provider, _other(decision.provider)
+    chain = [(first, m) for m in _models_for(first)]
+    if provider_available(other):
+        chain += [(other, m) for m in _models_for(other)]
+    now = time.time()
+    live = [pm for pm in chain if _cooldown.get(pm[1], 0) <= now]
+    return live or chain[:1]
+
+
+def _retry_decision(d: "RouteDecision", provider: str, model: str, err: Exception) -> "RouteDecision":
+    why = f"{d.model} failed ({type(err).__name__}: {str(err)[:120]})"
+    if provider == d.provider:
+        return RouteDecision(d.role, provider, model, d.dimension,
+                             f"{d.reason} [{why}; retried on {model}, same provider]", d.signals)
+    return RouteDecision(d.role, provider, model, "fallback", f"{why}; retried on {provider} ({model}).", d.signals)
 
 
 def _other(provider: str) -> str:
@@ -132,12 +176,6 @@ def decide(role: str, *, agent: str | None = None, complexity: str = "simple",
     return _apply_availability(d)
 
 
-def _fallback(d: RouteDecision, err: Exception) -> RouteDecision:
-    alt = _other(d.provider)
-    return RouteDecision(d.role, alt, model_name(alt), "fallback",
-                         f"{d.provider} failed ({type(err).__name__}: {str(err)[:120]}); retried on {alt}.", d.signals)
-
-
 def usage_of(msg: Any) -> dict:
     u = getattr(msg, "usage_metadata", None) or {}
     return {"input_tokens": int(u.get("input_tokens", 0) or 0), "output_tokens": int(u.get("output_tokens", 0) or 0)}
@@ -155,9 +193,11 @@ async def invoke(decision: RouteDecision, messages: list, *, tools: list | None 
 
     Returns (msg, decision_used, ms). With `structured`, msg is {"raw": AIMessage, "parsed": model}.
     """
-    attempt = decision
-    for i in range(2):
-        llm = get_chat(attempt.provider)
+    chain = _chain(decision)
+    attempt = decision if (decision.provider, decision.model) == chain[0] else \
+        RouteDecision(decision.role, chain[0][0], chain[0][1], decision.dimension, decision.reason, decision.signals)
+    for i, (provider, model) in enumerate(chain):
+        llm = get_chat(provider, model)
         if tools:
             llm = llm.bind_tools(tools)
         if structured:
@@ -168,10 +208,20 @@ async def invoke(decision: RouteDecision, messages: list, *, tools: list | None 
             if structured and msg.get("parsed") is None:
                 raise ValueError(f"structured output did not parse: {msg.get('parsing_error')}")
             return msg, attempt, (time.perf_counter() - t0) * 1000
-        except Exception as e:  # noqa: BLE001 - any provider error triggers fallback
-            if i == 1 or not provider_available(_other(attempt.provider)):
+        except Exception as e:  # noqa: BLE001 - any provider error moves down the chain
+            if _is_capacity_error(e):
+                _cooldown[model] = time.time() + COOLDOWN_S
+            if i == len(chain) - 1:
                 raise
-            attempt = _fallback(attempt, e)
+            nxt = chain[i + 1]
+            if nxt[0] == provider and not _is_capacity_error(e):
+                # not a quota problem: another model of the same provider won't help, jump providers
+                rest = [pm for pm in chain[i + 1:] if pm[0] != provider]
+                if not rest:
+                    raise
+                nxt = rest[0]
+                chain[i + 1:] = rest
+            attempt = _retry_decision(attempt, nxt[0], nxt[1], e)
             if on_fallback:
                 on_fallback(attempt)
     raise RuntimeError("unreachable")
@@ -220,9 +270,11 @@ async def stream(decision: RouteDecision, inputs: Any, *, build: Callable[[Any],
     Fallback only happens if the provider fails before the first token, so the user never sees a
     half answer from one model followed by a full answer from another.
     """
-    attempt = decision
-    for i in range(2):
-        llm = get_chat(attempt.provider)
+    chain = _chain(decision)
+    attempt = decision if (decision.provider, decision.model) == chain[0] else \
+        RouteDecision(decision.role, chain[0][0], chain[0][1], decision.dimension, decision.reason, decision.signals)
+    for i, (provider, model) in enumerate(chain):
+        llm = get_chat(provider, model)
         runnable = build(llm) if build else llm   # e.g. the LCEL answer chain: prompt | llm
         t0 = time.perf_counter()
         ttft = None
@@ -246,8 +298,17 @@ async def stream(decision: RouteDecision, inputs: Any, *, build: Callable[[Any],
             yield "final", {"decision": attempt, "usage": usage, "ms": (time.perf_counter() - t0) * 1000, "ttft_ms": ttft}
             return
         except Exception as e:  # noqa: BLE001
-            if ttft is not None or i == 1 or not provider_available(_other(attempt.provider)):
+            if _is_capacity_error(e):
+                _cooldown[model] = time.time() + COOLDOWN_S
+            if ttft is not None or i == len(chain) - 1:
                 raise
-            attempt = _fallback(attempt, e)
+            nxt = chain[i + 1]
+            if nxt[0] == provider and not _is_capacity_error(e):
+                rest = [pm for pm in chain[i + 1:] if pm[0] != provider]
+                if not rest:
+                    raise
+                nxt = rest[0]
+                chain[i + 1:] = rest
+            attempt = _retry_decision(attempt, nxt[0], nxt[1], e)
             if on_fallback:
                 on_fallback(attempt)

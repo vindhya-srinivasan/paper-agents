@@ -60,4 +60,4 @@ gcloud run deploy "$CLOUD_RUN_SERVICE" \
 URL=$(gcloud run services describe "$CLOUD_RUN_SERVICE" --region "$GCP_REGION" --format='value(status.url)')
 echo
 echo "Deployed: $URL"
-echo "Health:   curl -s $URL/healthz"
+echo "Health:   curl -s $URL/health"

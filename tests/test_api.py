@@ -52,7 +52,8 @@ def test_validation_and_static():
         assert c.post("/api/chat", json={"query": "q", "session_id": "../etc"}).status_code == 422
         assert c.post("/api/chat", json={"query": "q", "session_id": "x", "debug_fail_agent": "boom"}).status_code == 400
         assert c.get("/").status_code == 200
-        assert c.get("/healthz").json()["status"] == "ok"
+        assert c.get("/health").json()["status"] == "ok"
+        assert c.get("/healthz").status_code == 200   # local alias
 
 
 def test_forced_failure_via_api():

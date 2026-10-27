@@ -31,11 +31,11 @@ chromadb==1.5.9
 # Durable conversation state
 google-cloud-firestore==2.34.1
 
-# Corpus fetching
-arxiv==4.0.1
+# Corpus fetching (PDF text extraction)
 pypdf==6.21.2
 
 # Evaluation
 ragas==0.4.3
 datasets==5.1.0
 httpx==0.28.1
+certifi==2026.10.23

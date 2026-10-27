@@ -215,17 +215,31 @@
   });
 
   // Restore this session's history from the durable store (shows it survives restarts).
+  async function getJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${url} returned HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // Health and history are loaded independently so one failure never hides the other.
   async function init() {
+    let h = {};
     try {
-      const h = await (await fetch("/healthz")).json();
+      h = await getJSON("/health");
       $("status").innerHTML = `instance ${esc(h.instance_id)} · ${esc(h.revision)}<br>session ${esc(sessionId)}`;
-      const hist = await (await fetch("/api/history?session_id=" + encodeURIComponent(sessionId))).json();
+    } catch (e) {
+      $("status").innerHTML = `status unavailable<br>session ${esc(sessionId)}`;
+    }
+    try {
+      const hist = await getJSON("/api/history?session_id=" + encodeURIComponent(sessionId));
       for (const t of hist.turns) addMsg(t.role, t.role === "user" ? esc(t.content) : `<div class="body">${render(t.content)}</div>`);
       if (hist.turns.length) {
         panels.routing.innerHTML = `<p class="hint">Restored ${hist.turns.length / 2} earlier turn(s) of session ${esc(sessionId)} ` +
-          `from the durable store (${esc(h.state_store)}), served by instance ${esc(hist.instance_id)}.</p>`;
+          `from the durable store (${esc(h.state_store || "server")}), served by instance ${esc(hist.instance_id)}.</p>`;
       }
-    } catch (_) { $("status").textContent = "backend unreachable"; }
+    } catch (e) {
+      panels.routing.innerHTML = `<p class="hint">Could not load earlier turns: ${esc(e.message)}</p>`;
+    }
   }
   init();
 })();

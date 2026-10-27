@@ -1,0 +1,688 @@
+Active Retrieval Augmented Generation
+Zhengbao Jiang1∗ Frank F. Xu1∗ Luyu Gao1∗ Zhiqing Sun1∗ Qian Liu2
+Jane Dwivedi-Yu3 Yiming Yang1 Jamie Callan1 Graham Neubig1
+1Language Technologies Institute, Carnegie Mellon University
+2Sea AI Lab 3FAIR, Meta
+{zhengbaj,fangzhex,luyug,zhiqings,gneubig}@cs.cmu.edu
+Abstract
+Despite the remarkable ability of large language models (LMs) to comprehend and generate language, they have a tendency to hallucinate and create factually inaccurate output. Augmenting LMs by retrieving information from external knowledge resources is one
+promising solution. Most existing retrieval augmented LMs employ a retrieve-and-generate
+setup that only retrieves information once based
+on the input. This is limiting, however, in
+more general scenarios involving generation
+of long texts, where continually gathering information throughout generation is essential. In
+this work, we provide a generalized view of active retrieval augmented generation, methods
+that actively decide when and what to retrieve
+across the course of the generation. We propose
+Forward-Looking Active REtrieval augmented
+generation (FLARE), a generic method which
+iteratively uses a prediction of the upcoming
+sentence to anticipate future content, which is
+then utilized as a query to retrieve relevant documents to regenerate the sentence if it contains
+low-confidence tokens. We test FLARE along
+with baselines comprehensively over 4 longform knowledge-intensive generation tasks/datasets. FLARE achieves superior or competitive performance on all tasks, demonstrating
+the effectiveness of our method.1
+1 Introduction
+Generative language models (LMs) (Brown et al.,
+2020; Ouyang et al., 2022; OpenAI, 2023; Chowdhery et al., 2022; Zhang et al., 2022; Touvron et al.,
+2023; Zhao et al., 2023) have become a foundational component in natural language processing
+(NLP) systems with their remarkable abilities. Although LMs have memorized some world knowledge during training (Petroni et al., 2019; Roberts
+et al., 2020; Jiang et al., 2020), they still tend to
+∗Lead contributors.
+1Code and datasets are available athttps://github.com/
+jzbjyb/FLARE.
+hallucinate and create imaginary content (Maynez
+et al., 2020; Zhou et al., 2021). Augmenting LMs
+with retrieval components that look up relevant information from external knowledge resources is a
+promising direction to address hallucination (Khandelwal et al., 2020; Izacard et al., 2022).
+Retrieval augmented LMs commonly use a
+retrieve-and-generate setup where they retrieve documents based on the user’s input, and then generate
+a complete answer conditioning on the retrieved
+documents (Chen et al., 2017; Guu et al., 2020;
+Lewis et al., 2020; Izacard and Grave, 2021; Sachan
+et al., 2021; Lee et al., 2021; Jiang et al., 2022;
+Izacard et al., 2022; Nakano et al., 2021; Qian
+et al., 2023; Lazaridou et al., 2022; Shi et al., 2023).
+These single-time retrieval augmented LMs outperform purely parametric LMs, particularly for shortform knowledge-intensive generation tasks such
+as factoid question answering (QA) (Kwiatkowski
+et al., 2019; Joshi et al., 2017), where the information needs are clear in the user’s input, and it is
+sufficient to retrieve relevant knowledge once solely
+based on the input.
+Increasingly powerful large LMs have also
+demonstrated abilities in more complex tasks that
+involve generating long-form output, such as longform QA (Fan et al., 2019; Stelmakh et al., 2022),
+open-domain summarization (Cohen et al., 2021;
+Hayashi et al., 2021; Giorgi et al., 2022), and
+(chain-of-thought; CoT) reasoning (Wei et al.,
+2022; Ho et al., 2020; Geva et al., 2021; Hendrycks
+et al., 2020). In contrast to short-form generation,
+long-form generation presents complex information needs that are not always evident from the input alone. Similar to how humans gradually gather
+information as we create content such as papers,
+essays, or books, long-form generation with LMs
+would require gathering multiple pieces of knowledge throughout the generation process . For example, to generate a summary about a particular
+topic, the initial retrieval based on the topic name
+arXiv:2305.06983v2 [cs.CL] 22 Oct 2023
+Generate a summary about Joe Biden.
+Search results: !!
+[1]: …
+[2]: …
+Joe Biden (born November 20, 1942) is the 46th president of the United States.
+Joe Biden (born November 20, 1942) is the 46th president of the United States.
+He graduated from the University of Delaware in 1965 with a Bachelor of Arts 
+in history and political science.
+Joe Biden attended the University of Pennsylvania, where he earned a law 
+degree.
+Retriever
+Input
+Step 1
+Search results: !"!
+[1]: …
+[2]: …
+"##
+##
+"#$
+#$
+$
+Step 2
+Joe Biden announced his candidacy for the 2020 presidential election on April 
+25, 2019.
+Joe Biden announced his candidacy for the 2020 presidential election on August 
+18, 2019."#%
+#%
+Step 3
+Search results: !""
+[1]: …
+[2]: …
+Retrieved
+documents
+LM
+Generation
+$
+%$
+%%
+Figure 1: An illustration of forward-looking active retrieval augmented generation (FLARE). Starting with the user
+input x and initial retrieval results Dx, FLARE iteratively generates a temporary next sentence (shown in gray
+italic) and check whether it contains low-probability tokens (indicated with underline). If so (step 2 and 3), the
+system retrieves relevant documents and regenerates the sentence.
+(e.g., Joe Biden) may not cover all aspects and details. It is crucial to retrieve extra information as
+needed during generation, such as when generating a certain aspect (e.g., Joe Biden’s education
+history) or a specific detail (e.g., the date of Joe
+Biden’s presidential campaign announcement).
+Several attempts have been made to retrieve multiple times throughout generation. These attempts
+include methods that passively use the past context
+to retrieve additional information at a fixed interval
+(Khandelwal et al., 2020; Borgeaud et al., 2022;
+Ram et al., 2023; Trivedi et al., 2022) which might
+not accurately reflect what LMs intend to generate in the future or retrieve at inappropriate points.
+Some works in multihop QA decompose the full
+question into sub-questions, each of which is used
+to retrieve extra information (Press et al., 2022; Yao
+et al., 2022; Khot et al., 2022; Khattab et al., 2022).
+We ask the following question: can we create a
+simple and generic retrieval augmented LM thatactively decides when and what to retrievethroughout
+the generation process, and are applicable to a variety of long-form generation tasks? We provide a
+generalized view of active retrieval augmented generation. Our hypothesis regarding when to retrieve
+is that LMs should retrieve information only when
+they lack the required knowledge to avoid unnecessary or inappropriate retrieval that occurs in passive
+retrieval augmented LMs (Khandelwal et al., 2020;
+Borgeaud et al., 2022; Ram et al., 2023; Trivedi
+et al., 2022). Given the observation that large LMs
+tend to be well-calibrated and low probability/confidence often indicates a lack of knowledge (Kadavath et al., 2022), we adopt an active retrieval
+strategy that only retrieves when LMs generate lowprobability tokens. When deciding what to retrieve,
+it is important to consider what LMs intend to generate in the future, as the goal of active retrieval is to
+benefit future generations. Therefore, we propose
+anticipating the future by generating a temporary
+next sentence, using it as a query to retrieve relevant documents, and then regenerating the next
+sentence conditioning on the retrieved documents.
+Combining the two aspects, we propose ForwardLooking Active REtrieval augmented generation
+(FLARE), as illustrated in Figure 1. FLARE iteratively generates a temporary next sentence, use
+it as the query to retrieve relevant documents if it
+contains low-probability tokens and regenerate the
+next sentence until reaches the end.
+FLARE is applicable to any existing LMs at
+inference time without additional training. Considering the impressive performance achieved by
+GPT-3.5 (Ouyang et al., 2022) on a variety of
+tasks, we examine the effectiveness of our methods on text-davinci-003. We evaluate FLARE
+on 4 diverse tasks/datasets involving generating
+long outputs, including multihop QA (2WikiMultihopQA), commonsense reasoning (StrategyQA),
+long-form QA (ASQA), and open-domain summarization (WikiAsp) (Ho et al., 2020; Geva et al.,
+2021; Stelmakh et al., 2022; Hayashi et al., 2021).
+Over all tasks, FLARE achieves superior or competitive performance compared to single-time and
+multi-time retrieval baselines, demonstrating the
+effectiveness and generalizability of our method.
+2 Retrieval Augmented Generation
+We formally define single-time retrieval augmented
+generation and propose the framework of active
+retrieval augmented generation.
+2.1 Notations and Definitions
+Given a user input x and a document corpus D =
+{di}|D|i=1 (such as all Wikipedia articles), the goal of
+retrieval augmented LMs is to generate the answer
+y = [s1, s2, ...,sm] = [w1, w2, ..., wn] containing
+m sentences or n tokens leveraging information
+retrieved from the corpus.
+In retrieval augmented LM, the LM typically
+pairs with a retriever that can retrieve a list of
+documents Dq = ret(q) for a query q; the LM
+conditions on both the user input x and retrieved
+documents Dq to generate the answer. Since we
+focus on examining various methods of determining when and what to retrieve, we follow existing methods (Ram et al., 2023; Trivedi et al.,
+2022) to prepend the retrieved documents before
+the user input to aid future generation for both
+baselines and our method for fair comparisons:
+y = LM([Dq, x]), where [·, ·] is concatenation following the specified order.
+2.2 Single-time Retrieval Augmented
+Generation
+The most common choice is to directly use the user
+input as the query for retrieval and generate the
+complete answer at once y = LM([Dx, x]).
+2.3 Active Retrieval Augmented Generation
+To aid long-form generation with retrieval, we propose active retrieval augmented generation. It is a
+generic framework that actively decides when and
+what to retrieve through the generation process,
+resulting in the interleaving of retrieval and generation. Formally, at step t(t ≥ 1), the retrieval query
+qt is formulated based on both the user input x and
+previously generated output y<t = [y0, ...,yt−1]:
+qt = qry(x, y<t),
+where qry(·) is the query formulation function. At
+the beginning (t = 1), the previous generation is
+empty (y<1 = ∅), and the user input is used as the
+initial query (q1 = x). Given retrieved documents
+Dqt, LMs continually generate the answer until the
+next retrieval is triggered or reaches the end:
+yt = LM([Dqt, x, y<t]),
+where yt represents the generated tokens at the current step t, and the input to LMs is the concatenation of the retrieved documents Dqt, the user input
+x, and the previous generation y<t. We discard
+previously retrieved documents ∪t′<tDqt′ and only
+use the retrieved documents from the current step
+to condition the next generation to prevent reaching
+the input length limit of LMs.
+3 FLARE: Forward-Looking Active
+REtrieval Augmented Generation
+Our intuition is that (1) LMs should only retrieve
+information when they do not have the necessary
+knowledge to avoid unnecessary or inappropriate
+retrieval, and (2) the retrieval queries should reflect
+the intents of future generations. We propose two
+forward-looking active retrieval augmented generation (FLARE) methods to implement the active
+retrieval augmented generation framework. The
+first method prompts the LM to generate retrieval
+queries when necessary while generating the answer using retrieval-encouraging instructions, denoted as FLAREinstruct. The second method directly
+uses the LM’s generation as search queries, denoted
+as FLAREdirect, which iteratively generates the next
+sentence to gain insight into the future topic, and
+if uncertain tokens are present, retrieves relevant
+documents to regenerate the next sentence.
+3.1 FLARE with Retrieval Instructions
+Inspired by Toolformer (Schick et al., 2023), a
+straightforward way of expressing information
+needs for retrieval is to generate “[Search(query)]”
+when additional information is needed (Schick
+et al., 2023), e.g., “The colors on the flag of
+Ghana have the following meanings. Red is for
+[Search(Ghana flag red meaning)] the blood of martyrs, ...” When working with GPT-3.5 models that
+Search results: !!
+[1]: …
+[2]: …
+Joe Biden attended
+Search results: !"!
+[1]: …
+[2]: …Search results: !""
+[1]: …
+[2]: …
+[Search(Joe Biden University)]
+[Search(Joe Biden degree)]
+the University of Pennsylvania, where he earned
+a law degree.
+Generate a summary about Joe Biden.
+Input$
+&$
+&#
+%$
+&%
+%%
+Generation
+Retriever
+$
+%$
+%%
+Figure 2: An illustration of forward-looking active retrieval augmented generation with retrieval instructions
+(FLAREinstruct). It iteratively generates search queries
+(shown in gray italic) to retrieve relevant information to
+aid future generations.
+offer only API access, we elicit such behavior by
+few-shot prompting (Brown et al., 2020).
+Specifically, for a downstream task, we place
+the search-related instruction and exemplars at the
+beginning as skill 1, followed by the instruction and
+exemplars of the downstream task as skill 2. Given
+a test case, we ask LMs to combine skills 1 and 2 to
+generate search queries while performing the task.
+The structure of the prompt is shown in Prompt 3.1,
+and full details can be found in Prompt D.3.
+Prompt 3.1: retrieval instructions
+Skill 1. An instruction to guide LMs to generate search
+queries.
+Several search-related exemplars.
+Skill 2. An instruction to guide LMs to perform a
+specific downstream task (e.g., multihop QA).
+Several task-related exemplars.
+An instruction to guide LMs to combine skills 1
+and 2 for the test case.
+The input of the test case.
+As shown in Figure 2, when the LM generates
+“[Search(query)]” (shown in gray italic), we stop
+the generation and use the query terms to retrieve
+relevant documents, which are prepended before
+the user input to aid future generation until the
+next search query is generated or reaches the end.
+Additional implementation details are included in
+Appendix A.
+3.2 Direct FLARE
+Since we cannot fine-tune black-box LMs, we
+found queries generated by FLAREinstruct through
+retrieval instructions might not be reliable. Therefore, we propose a more direct way of forwardlooking active retrieval that uses the next sentence
+to decide when and what to retrieve.
+3.2.1 Confidence-based Active Retrieval
+As shown in Figure 1, at step t, we first generate a
+temporary next sentence ˆst = LM([x, y<t]) without conditioning on retrieved documents. Then we
+decide whether to trigger retrieval and formulate
+queries based on ˆst. If the LM is confident about ˆst,
+we accept it without retrieving additional information; if not, we use ˆst to formulate search queries
+qt to retrieve relevant documents, and then regenerate the next sentence st. The reason we utilize
+sentences as the basis of our iteration is due to their
+significance as semantic units that are neither too
+short nor too lengthy like phrases and paragraphs.
+However, our approach can also utilize phrases or
+paragraphs as the basis.
+Since LMs tend to be well-calibrated that low
+probability/confidence often indicates a lack of
+knowledge (Jiang et al., 2021; Kadavath et al.,
+2022; Varshney et al., 2022), we actively trigger
+retrieval if any token of ˆst has a probability lower
+than a threshold θ ∈ [0, 1]. θ = 0means retrieval
+is never triggered, while θ = 1triggers retrieval
+every sentence.
+yt =
+(
+ˆst if all tokens of ˆst have probs ≥ θ
+st = LM([Dqt, x, y<t]) otherwise
+where the query qt is formulated based on ˆst.
+3.2.2 Confidence-based Query Formulation
+One way to perform retrieval is to directly use the
+next sentence ˆst as the query qt. This shares a similar spirit with methods that use generated hypothetical titles or paragraphs from LMs as retrieval
+queries or evidences (Gao et al., 2022; Sun et al.,
+2022; Yu et al., 2022; Mao et al., 2021). We generalize such techniques to long-form generation
+where active information access is essential.
+We found retrieving with the next sentence
+achieves significantly better results than with the
+previous context, as shown later in subsection 6.2.
+However, it has a risk of perpetuating errors contained in it. For example, if the LM produces the
+sentence “Joe Biden attended the University of
+Pennsylvania” instead of the correct fact that he
+attended the University of Delaware, using this erroneous sentence as a query might retrieve misleadJoe Biden attended the University of Pennsylvania, 
+where he earned a law degree.
+Ask a question to which the answer is “the University of Pennsylvania”
+Ask a question to which the answer is “a law degree”
+What university did Joe Biden attend?
+What degree did Joe Biden earn?
+implicit query 
+by masking
+explicit query by
+ question generation
+Joe Biden attended , where he earned .
+LM such as ChatGPT
+Figure 3: Implicit and explicit query formulation. Tokens with low probabilities are marked with underlines.
+ing information. We propose two simple methods
+to overcome this issue as illustrated in Figure 3.
+Masked sentences as implicit queries. The first
+method masks out low-confidence tokens inˆst with
+probabilities below a threshold β ∈ [0, 1], where a
+higher β results in more aggressive masking. This
+removes potential distractions from the sentence to
+improve retrieval accuracy.
+Generated questions as explicit queries. Another method is to generate explicit questions that
+target the low-confident span in ˆst. For example, if
+the LM is uncertain about “the University of Pennsylvania”, a question like “Which university did
+Joe Biden attend?” can help retrieve relevant information. Self-ask (Press et al., 2022) achieved
+this by manually inserting follow-up questions
+into downstream task exemplars as shown later
+in Prompt D.2, which requires task-specific annotation efforts. Instead, we developed a universal approach that generates questions for low-confidence
+spans without additional annotation. Specifically,
+We first extract all spans from ˆst with probabilities
+below β. For each extracted span z, we prompt
+gpt-3.5-turbo to generate a question qt,z that
+can be answered with the span:
+Prompt 3.2: zero-shot question generation
+User input x.
+Generated output so far y≤t.
+Given the above passage, ask a question to which
+the answer is the term/entity/phrase “z”.
+We retrieve using each generated question and
+interleave the returned documents into a single
+ranking list to aid future generations. In summary,
+queries qt are formulated based on ˆst as follows:
+qt =
+(
+∅ if all tokens of ˆst have probs ≥ θ
+mask(ˆst) or qgen(ˆst) otherwise
+3.3 Implementation Details
+Base LM We validate our method on one of the
+most advanced GPT-3.5 LMs text-davinci-003
+by iteratively querying their API.2
+Document corpus and retrievers. Since we focus on the integration of retrieval and generation,
+we use off-the-shelf retrievers that take queries
+as inputs and return a list of relevant documents.
+For datasets that mainly rely on knowledge from
+Wikipedia, we use the Wikipedia dump from
+Karpukhin et al. (2020) and employ BM25 (Robertson and Zaragoza, 2009) as the retriever. For
+datasets that rely on knowledge from the open web,
+we use the Bing search engine as our retriever.3
+Retrieved document formatting. Multiple retrieved documents are linearized according to their
+ranking and then added to the beginning of the user
+input using Prompt D.1.
+Other implementation details such as sentence tokenization and efficiency are included Appendix A.
+4 Multi-time Retrieval Baselines
+Existing passive multi-time retrieval augmented
+LMs can also be formulated using our framework
+(subsection 2.3). In this section, we formally introduce three baseline categories based on when
+and what to retrieve. These baselines are not exact
+reproductions of the corresponding paper because
+many design choices differ which makes direct
+comparisons impossible. We implemented them
+using the same settings, with the only variation
+being when and what to retrieve.
+Previous-window approaches trigger retrieval
+every l tokens, where l represents the window size.
+Generated tokens from the previous window are
+used as the query:
+qt = yt−1 (t ≥ 2),
+yt = [w(t−1)l+1, ..., wtl].
+Some existing methods in this category are RETRO
+(Borgeaud et al., 2022), IC-RALM (Ram et al.,
+2https://api.openai.com/v1/completions April 23.
+3https://www.microsoft.com/en-us/bing/apis/
+bing-web-search-api
+2023), which retrieve every few tokens, and KNNLM (Khandelwal et al., 2020), which retrieves every token.4 We follow Ram et al. (2023) to use a
+window size of l = 16.
+Previous-sentence approaches trigger retrieval
+every sentence and use the previous sentence as the
+query, and IRCoT (Trivedi et al., 2022) belongs to
+this category:
+qt = yt−1 (t ≥ 2),
+yt = st.
+Question decomposition approaches manually
+annotated task-specific exemplars to guide LMs
+to generate decomposed sub-questions while producing outputs. For example, self-ask (Press et al.,
+2022), a method in this category, manually inserts
+sub-questions in exemplars using Prompt D.2. For
+the test case, retrieval is triggered dynamically
+whenever the model generates a sub-question.
+The aforementioned approaches can retrieve additional information while generating. However,
+they have notable drawbacks: (1) Using previously
+generated tokens as queries might not reflect what
+LMs intend to generate in the future. (2) Retrieving information at a fixed interval can be inefficient
+because it might occur at inappropriate points. (3)
+Question decomposition approaches require taskspecific prompt engineering, which restricts their
+generalizability in new tasks.
+5 Experimental Setup
+We evaluate the effectiveness of FLARE on 4 diverse knowledge-intensive tasks using few-shot incontext learning (Radford et al., 2019; Brown et al.,
+2020; Liu et al., 2023). We follow previous works
+(Trivedi et al., 2022) to sub-sample at most 500
+examples from each dataset due to the cost of running experiments. Datasets, metrics, and settings
+are summarized in Table 7 of Appendix B. The
+hyperparameters of FLARE are selected based on
+the development set and listed in Table 9. FLARE
+refers to FLAREdirect if not specifically stated.
+Multihop QA The goal of multihop QA is to
+answer complex questions through information retrieval and reasoning. We use 2WikiMultihopQA
+(Ho et al., 2020) which contains 2-hop complex
+4Since KNN-LM uses the contextualized representation
+corresponding to the current decoding position to retrieve relevant information which encodes all previous tokens. Strictly
+speaking, qt should be y<t.
+questions sourced from Wikipedia articles that require composition, comparison, or inference, e.g.,
+“Why did the founder of Versus die?” We follow
+Wang et al. (2022) to generate both the chain-ofthought and the final answer. Experimental setting
+details are included in Appendix B.
+We use regular expressions to extract the final
+answer from the output and compare it with the reference answer using exact match (EM), and tokenlevel F1, precision, and recall.
+Commonsense reasoning Commonsense reasoning requires world and commonsense knowledge
+to generate answers. We use StrategyQA (Geva
+et al., 2021) which is a collection of crowdsourced
+yes/no questions, e.g., “Would a pear sink in water?” We follow Wei et al. (2022) to generate both
+the chain-of-thought and the final yes/no answer.
+Details are included in Appendix B.
+We extract the final answer and match it against
+the gold answer using exact match.
+Long-form QA Long-form QA aims to generate
+comprehensive answers to questions seeking complex information (Fan et al., 2019; Stelmakh et al.,
+2022). We use ASQA (Stelmakh et al., 2022) as our
+testbed where inputs are ambiguous questions with
+multiple interpretations, and outputs should cover
+all of them. For example, “Where do the Philadelphia Eagles play their home games?” could be
+asking about the city, sports complex, or stadium.
+We found in many cases it is challenging even for
+humans to identify which aspect of the question
+is ambiguous. Therefore, we created another setting (ASQA-hint) where we provide a brief hint
+to guide LMs to stay on track when generating answers. The hint for the above case is “This question
+is ambiguous in terms of which specific location or
+venue is being referred to.” Experimental setting
+details are included in Appendix B.
+We use metrics from Stelmakh et al. (2022), including EM, RoBERTa-based QA score (DisambigF1), ROUGE (Lin, 2004), and an overall score combining Disambig-F1 and ROUGE (DR).
+Open-domain summarization The goal of opendomain summarization is to generate a comprehensive summary about a topic by gathering information from open web (Giorgi et al., 2022). We use
+WikiAsp (Hayashi et al., 2021) which aims to generate aspect-based summaries about entities from
+20 domains in Wikipedia, e.g., “Generate a summary about Echo School (Oregon) including the
+0.0
+20.0
+40.0
+60.0
+80.0
+2WikiMultihopQA StrategyQA ASQA ASQA-hint WikiAsp
+No ret. Single-time ret. Previous-window ret. Forward-Looking Active REtrieval augmented generation (FLARE)
+Figure 4: Comparision between FLARE and baselines across all tasks/datasets. We report the primary metric for
+each dataset: EM for 2WikiMultihopQA, StrategyQA, and ASQA, and UniEval for WikiAsp.
+following aspects: academics, history.” Experimental setting details are included in Appendix B.
+Metrics include ROUGE, named entity-based F1,
+and UniEval (Zhong et al., 2022) which measures
+factual consistency.
+6 Experimental Results
+We first report overall results across 4 tasks/datasets
+and compare the performance of FLARE with all
+the baselines introduced in section 4. We then
+run ablation experiments to study the efficacy of
+various design choices of our method.
+6.1 Comparison with Baselines
+Overall results. The overall performance of
+FLARE and baseline across all tasks/datasets are
+reported in Figure 4. FLARE outperforms all baseline on all tasks/datasets, indicating that FLARE
+is a generic method that can effectively retrieve
+additional information throughout the generation.
+Among various tasks, multihop QA shows the
+most significant improvement. This is largely due
+to the task’s clear definition and specific objective
+of producing the final answer through a 2-hop reasoning process, which makes it easier for LMs to
+generate on-topic output. In contrast, ASQA and
+WikiAsp are more open-ended, which increases the
+difficulty of both generation and evaluation. The
+improvement on ASQA-hint is larger than that of
+ASQA because identifying ambiguous aspects is
+challenging even for humans in many cases, and
+providing a generic hint helps LMs to stay on topic.
+Thorough comparisons with baselines. The performance of all baselines on 2WikiMultihopQA
+are reported in Table 1. FLARE outperforms all
+baselines by a large margin, which confirms that
+forward-looking active retrieval is highly effective.
+Most multi-time retrieval augmented approaches
+outperform single-time retrieval but with different
+Methods EM F 1 Prec. Rec.
+No retrieval 28.2 36.8 36.5 38.6
+Single-time retrieval 39.4 48.8 48.6 51.5
+Multi-time retrieval
+Previous-window 43.2 52.3 51.7 54.5
+Previous-sentence 39.0 49.2 48.9 51.8
+Question decomposition 47.8 56.4 56.1 58.6
+FLAREinstruct (ours) 42.4 49.8 49.1 52.5
+FLAREdirect (ours) 51.0 59.7 59.1 62.6
+Table 1: FLARE and baselines on 2WikiMultihopQA.
+Previous-window (Borgeaud et al., 2022; Ram et al.,
+2023), previous-sentence (Trivedi et al., 2022), and question decomposition (Press et al., 2022; Yao et al., 2022)
+methods are reimplemented for fair comparisons.
+margins. The improvement of retrieving using the
+previous sentence is relatively small which we hypothesize is mainly because the previous sentence
+often describes entities or relations different from
+those in the next sentence in 2WikiMultihopQA.
+While the previous-window approach might use
+the first half of a sentence to retrieve information
+potentially helpful for generating the second half.
+Among all baselines, the question decomposition
+approach (Press et al., 2022) achieves the best performance. which is not surprising since the incontext exemplars manually annotated with decomposed sub-questions (Prompt D.2) guide LMs to
+generate sub-questions that align with the topic/intent of future generations. FLARE outperforms
+this baseline, indicating that manual exemplar annotation is not necessary for effective future-aware
+retrieval. The gap between FLAREinstruct and question decomposition is large, indicating that teaching
+LMs to generate search queries using task-generic
+retrieval instructions and exemplars is challenging.
+We report all metrics for the other datasets in
+Table 2. FLARE outperforms baselines with respect to all metrics. Retrieval using the previDatasets StrategyQA ASQA ASQA-hint WikiAsp
+Metrics EM EM D-F 1 R-L DR EM D-F 1 R-L DR UniEval E-F 1 R-L
+No retrieval 72.9 33.8 24.2 33.3 28.4 40.1 32.5 36.4 34.4 47.1 14.1 26.4
+Single-time retrieval 68.6 40.0 27.1 34.0 30.4 43.2 34.8 37.4 36.0 52.4 17.4 26.9
+Multi-time retrieval
+Previous-window 71.2 39.9 27.0 34.3 30.4 43.7 35.7 37.5 36.6 51.8 18.1 27.3
+Previous-sentence 71.0 39.9 27.9 34.3 30.9 44.7 35.9 37.5 36.7 52.6 17.8 27.2
+FLARE (ours) 77.3 41.3 28.2 34.3 31.1 46.2 36.7 37.7 37.2 53.4 18.9 27.6
+Table 2: Comparison between FLARE and baselines on StrategyQA, ASQA, ASQA-hint, and WikiAsp. D-F1 is
+Disambig-F1, R-L is ROUGE-L, and E-F1 is named entity-based F1.
+2WikiMultihopQA ASQA-hint
+EM F 1 Prec. Rec. EM D-F 1 R-L DR
+Previous 39.0 49.2 48.9 51.8 42.5 34.1 36.9 35.5
+Next 48.8 57.6 57.1 60.5 45.9 35.7 37.5 36.6
+Table 3: A head-to-head comparison between using the
+previous sentence and the next sentence for retrieval.
+#Tokens EM F 1 Prec. Rec.
+16 43.2 52.3 51.7 54.5
+32 43.6 52.4 52.0 55.0
+48 40.0 49.3 49.0 52.0
+All 39.0 48.5 48.2 51.1
+Table 4: Previous-window approaches using different
+numbers of tokens as queries.
+ous window underperforms single-time retrieval
+on ASQA, which we hypothesize is because the
+previous window does not accurately reflect future
+intent. Since we focus on evaluating factuality, metrics with an emphasis on factual content (such as
+EM, Disambig-F1, UniEval) are more reliable than
+metrics computed over all tokens (ROUGE-L).
+6.2 Ablation Study
+Importance of forward-looking retrieval. We
+first validate that forward-looking retrieval is more
+effective than past-context-based retrieval. We run
+ablation experiments on 2WikiMultihopQA and
+ASQA-hint comparing retrieval using the previous versus the next sentence. Specifically, both
+methods retrieve every sentence and directly use
+the complete previous/next sentence as queries. As
+shown in Table 3, using the next sentence to retrieve
+is clearly better than using the previous sentence,
+confirming our hypothesis.
+We also run previous-window approaches using
+different numbers of past tokens as queries. As
+shown in Table 4, using too many tokens (> 32) in
+%steps/sentences with retrieval
+0.0
+20.0
+40.0
+60.0
+80.0
+0.0 25.0 50.0 75.0 100.0
+2WikiMultihopQA StrategyQA
+Figure 5: Performance (EM) of FLARE with respect
+to the percentage of steps/sentences with retrieval on
+2WikiMultihopQA and StrategyQA.
+the past hurts the performance, further confirming
+our hypothesis that previous context might not be
+relevant to intent of future generations.
+Importance of active retrieval. Next, we investigate how active retrieval threshold θ affects performance. To alter our method from not retrieving
+to retrieving every sentence, we adjust the confidence threshold θ that determines when to trigger
+retrieval from 0 to 1. We then calculate the proportion of steps/sentences where retrieval is activated, and present the performance based on it. As
+shown in Figure 5, on 2WikiMultihopQA, the performance plateaus when the retrieval percentage
+exceeds 60%, indicating that retrieval when LMs
+are confident is not necessary. On StrategyQA, the
+performance drops when the retrieval percentage
+exceeds 50%, indicating that unnecessary retrieval
+can introduce noise and impede the original generation process. We found triggering retrieval for
+40%-80% of sentences usually leads to a good performance across tasks/datasets.
+Effectiveness of different query formulation
+methods We study implicit query formation by
+masking and explicit query formulation through
+question generation. In Table 5, we compare the
+performance of FLARE with different masking
+β EM F 1 Prec. Rec.
+0.0 0.488 0.576 0.571 0.605
+0.2 0.498 0.588 0.582 0.616
+0.4 0.510 0.597 0.591 0.627
+0.6 0.506 0.593 0.586 0.622
+Table 5: Performance of FLARE with respect to the
+masking threshold β on 2WikiMultihopQA.
+ASQA-hint WikiAsp
+EM D-F 1 R-L DR UniEval E-F 1 R-L
+Implicit 45.7 36.9 37.7 37.3 53.4 18.8 27.7
+Explicit 46.2 36.7 37.7 37.2 53.4 18.9 27.6
+Table 6: A comparison between implicit and explicit
+query formulation methods in FLARE.
+thresholds β. Retrieving directly with the complete
+sentence (β = 0) is worse than masking tokens
+with low probabilities, confirming our hypothesis
+that low-confidence erroneous tokens can distract
+retrievers. We compare implicit and explicit query
+formulation methods in Table 6. Performances of
+both methods are similar, indicating that both methods can effectively reflect information needs.
+7 Related Work
+We refer to subsection 2.2 and section 4 for extensively discussion on single-time and multi-time
+retrieval augmented LMs, which is the most relevant area to this paper.
+Iterative and adaptive retrieval Iterative retrieval and refinement has been studied in both
+text and code generation tasks (Peng et al., 2023;
+Zhang et al., 2023; Zemlyanskiy et al., 2022; Yu
+et al., 2023). FLARE differs from these methods in
+the granularity of generation and retrieval strategies.
+Adaptive retrieval has been studied in single-time
+retrieval scenarios based on either question popularity or generation probabilities (Mallen et al.,
+2022; Li et al., 2023), while we focus on long-form
+generation requiring active information access.
+Browser-enhanced LMs WebGPT (Nakano
+et al., 2021) and WebCPM (Qin et al., 2023) train
+LMs to interact with browser to enhance factuality
+using reinforcement learning or supervised training where multiple queries can be triggered before
+generation. FLARE is built on text-based retrievers
+but can be combined with a browser to potentially
+improve retrieval quality.
+8 Conclusion
+To aid long-form generation with retrieval augmentation, we propose an active retrieval augmented generation framework that decides when
+and what to retrieve during generation. We implement this framework with forward-looking active
+retrieval that iteratively uses the upcoming sentence
+to retrieve relevant information if it contains lowconfidence tokens and regenerates the next sentence. Experimental results on 4 tasks/datasets
+demonstrate the effectiveness of our methods. Future directions include better strategies for active
+retrieval and developing efficient LM architectures
+for active information integration.
+9 Limitations
+We also conduct experiments on Wizard of
+Wikipedia (Dinan et al., 2019) and ELI5 (Fan et al.,
+2019), and found that FLARE did not provide significant gains. Wizard of Wikipedia is a knowledgeintensive dialogue generation dataset where the output is relatively short (∼20 tokens on average) so
+retrieving multiple disparate pieces of information
+might not be necessary. ELI5 (Fan et al., 2019)
+is a long-form QA dataset requiring in-depth answers to open-ended questions. Due to issues mentioned in Krishna et al. (2021) such as difficulties
+of grounding generation in retrieval and evaluation, both single-time retrieval and FLARE did not
+provide significant gains over not using retrieval.
+From an engineering perspective, interleaving generation and retrieval with a naive implementation
+increases both overheads and the cost of generation.
+LMs need to be activated multiple times (once for
+each retrieval) and a caching-free implementation
+also requires recomputing the previous activation
+each time after retrieval. This issue can be potentially alleviated with special architectural designs
+that encode the retrieved documents Dqt and the
+input/generation (x/y<t) independently.
+Acknowledgements
+This work was supported in part by a grant from
+the Singapore Defence Science and Technology
+Agency and the IBM PhD Fellowship. We thank
+Chunting Zhou, Amanda Bertsch, Uri Alon, Hiroaki Hayashi, Harsh Trivedi, Patrick Lewis, Timo
+Schick, Kaixin Ma, Shuyan Zhou, and Songwei Ge
+for their insightful discussions and help with the
+experiments.

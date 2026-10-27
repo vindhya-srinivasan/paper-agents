@@ -1,0 +1,879 @@
+Atlas: Few-shot Learning with
+Retrieval Augmented Language Models
+Gautier Izacard∗ ∗,♦,♣,♥ gizacard@fb.com
+Patrick Lewis∗,♦ plewis@fb.com
+Maria Lomeli♦ marialomeli@fb.com
+Lucas Hosseini♦ hoss@fb.com
+Fabio Petroni♦ fabiopetroni@fb.com
+Timo Schick♦ schick@fb.com
+Jane Dwivedi-Yu♦ janeyu@fb.com
+Armand Joulin♦ ajoulin@fb.com
+Sebastian Riedel♦,♠ sriedel@fb.com
+Edouard Grave♦ egrave@fb.com
+♦ Meta AI Research, ♣ ENS, PSL University, ♥ Inria,♠ University College London
+Abstract
+Large language models have shown impressive few-shot results on a wide range of tasks.
+However, when knowledge is key for such results, as is the case for tasks such as question
+answering and fact checking, massive parameter counts to store knowledge seem to be needed.
+Retrieval augmented models are known to excel at knowledge intensive tasks without the
+need for as many parameters, but it is unclear whether they work in few-shot settings. In this
+work we presentAtlas, a carefully designed and pre-trained retrieval augmented language
+model able to learn knowledge intensive tasks with very few training examples. We perform
+evaluations on a wide range of tasks, including MMLU, KILT and NaturalQuestions, and
+study the impact of the content of the document index, showing that it can easily be updated.
+Notably, Atlasreaches over 42% accuracy on Natural Questions using only 64 examples,
+outperforming a 540B parameters model by 3% despite having 50x fewer parameters.
+1 Introduction
+Large language models (LLMs) are impressive few-shot learners (Brown et al., 2020; Rae et al., 2021; Hoﬀmann
+et al., 2022; Chowdhery et al., 2022). They are able to learn new tasks with very few examples or even
+from instructions alone. For this generalisation ability to emerge, the key ingredients are scaling both the
+parameter count of the model, and the size of the training data. Large language models owe this improvement
+to both a larger computational budget, enabling more complex reasoning, and the ability to memorize more
+information related to downstream tasks from the larger training data. While it is intuitive to assume that
+increased reasoning abilities lead to better generalisation, and hence few-shot learning, the same is not true
+for in-parameter memorisation. Speciﬁcally, it is unclear to what extent eﬀective few-shot learning requires
+vast knowledge in the parameters of the model.
+In this paper, we investigate whether few-shot learning requires models to store a large amount of information
+in their parameters, and if memorisation can be decoupled from generalisation. To do so, we leverage the fact
+that memory can be outsourced and replaced by an external non-parametric knowledge source by employing
+a retrieval-augmented architecture. These models employ a non-parametric memory, e.g. a neural retriever
+over a large, external, potentially non-static knowledge source to enhance a parametric language model. In
+addition to their memorisation abilities, such architectures are attractive due to a number of other established
+advantages in terms of adaptability, interpretability and eﬃciency (Guu et al., 2020; Lewis et al., 2020;
+Yogatama et al., 2021; Borgeaud et al., 2021, inter alia). However, retrieval-augmented models have yet to
+∗equal contribution
+1
+arXiv:2208.03299v3 [cs.CL] 16 Nov 2022
+Fact checking:
+Bermuda Triangle is in the western 
+part of the Himalayas.
+Atlas
+False
+Masked Language Modelling:
+Bermuda Triangle is in the 
+<MASK> of the Atlantic Ocean.
+TheBermuda 
+Triangle is anurban 
+legendfocused on a 
+loosely-defined 
+region in the 
+western part of the 
+NorthAtlantic 
+Ocean.
+western part
+Pretraining
+Few-shot
+Question answering:
+Where is the Bermuda Triangle?
+Western part of the 
+North Atlantic Ocean
+… …
+Figure 1: We introduceAtlas, a retrieval-augmented language model that exhibits strong few-shot performance on knowledge tasks, and uses retrieval during both pre-training and ﬁne-tuning.
+demonstrate compelling few-shot learning capabilities. In this work we address this gap, and presentAtlas,
+a retrieval-augmented language model capable of strong few-shot learning, despite having lower parameter
+counts than other powerful recent few-shot learners.
+Atlas retrieves relevant documents based on the current context by using a general-purpose dense retriever
+using a dual-encoder architecture, based on the Contriever (Izacard et al., 2022). The retrieved documents
+are processed, along with the current context, by a sequence-to-sequence model using the Fusion-in-Decoder
+architecture (Izacard & Grave, 2020) that generates the corresponding output. We study the impact of
+diﬀerent techniques to trainAtlason its few-shot performance on a range of downstream tasks, including
+question answering and fact checking. We ﬁnd that jointly pre-training the components is crucial for few-shot
+performance, and we carefully evaluate a number of existing and novel pre-training tasks and schemes for
+this purpose. Atlasachieves strong downstream performance in both few-shot and resource-rich settings.
+For example, with only 11B parameters,Atlasachieves an accuracy of 42.4% on NaturalQuestions using
+64 training examples (45.1% with a Wikipedia-only index), outperforming PaLM (Chowdhery et al., 2022),
+a 540B parameter model by almost 3 points, and 64.0% in a full-dataset setting with a Wikipedia index,
+establishing a new state of the art by 8 points.
+In summary we make the following contributions:
+• A thorough study on how to design and train retrieval-augmented language models, with a focus on
+downstream few-shot learning and sample eﬃciency.
+• The ﬁndings of this study lead to a retrieval-augmented language model, calledAtlas, that exhibits
+few-shot abilities that emerge at lower scale than standard LLM.
+• We provide an exploration of ﬁne-tuning strategies to eﬃciently adapt both the retriever and the
+language model to the task at hand.
+• Thorough downstream experiments in few-shot settings, demonstrating state-of-the-art results on
+few-shot NaturalQuestions (+2.8%), TriviaQA (+3.3%), FEVER (+5.1%), and results on par or
+stronger than models with 15× more parameters on MMLU.
+• Experiments investigating full-dataset ﬁnetuning, setting new state-of-the-art results in NaturalQuestions (+8.1%), TriviaQA (+9.3%) and 5 KILT Tasks.
+• Experiments demonstrating the updatability and interpretability characteristics ofAtlas.
+• Experiments demonstrating that a compressed index using product quantisation achieves comparable
+performance as an uncompressed index while resulting in a 5x memory reduction.
+Our code, pretrainedAtlascheckpoints, and various supporting data are available athttps://github.com/
+facebookresearch/atlas
+2
+Task Query Output
+Fact Checking Bermuda Triangle is in the western part of the Himalayas.
+False
+Question Answering who is playing the halftime show at super bowl 2016Coldplay
+Entity Linking NTFS-3G is an open source <E>cross-platform</E>
+implementation of the Microsoft Windows NTFS ﬁle
+system with read-write support.
+Cross-platform software
+Figure 2: Examples of query and output pairs for diﬀerent tasks from KILT.
+2 Method
+Our approach follows thetext-to-text framework (Raﬀel et al., 2019). This means that all the tasks are
+framed as follows: the system gets atext queryas input, and generates atext output. For example, in the case
+of question answering, the query corresponds to the question and the model needs to generate the answer.
+In the case of classiﬁcation tasks, the query corresponds to the textual input, and the model generates the
+lexicalized class label, i.e. the word corresponding to the label. We give more examples of downstream tasks,
+from the KILT benchmark in Figure 2. As many natural language processing tasks requireknowledge, our
+goal is to enhance standard text-to-text models with retrieval, which, as we hypothesise in the introduction,
+may be crucial to endow models with few-shot capabilities.
+2.1 Architecture
+Our model is based on two sub-models: theretriever and thelanguage model. When performing a task,
+from question answering to generating Wikipedia articles, our model starts by retrieving the top-k relevant
+documents from alarge corpusof text with the retriever. Then, these documents are fed to the language
+model, along with the query, which in turns generates the output. Both the retriever and the language model
+are based on pre-trained transformer networks, which we describe in more detail below.
+Retriever. Our retriever module is based on the Contriever (Izacard et al., 2022), an information retrieval
+technique based on continuous dense embeddings. The Contriever uses a dual-encoder architecture, where the
+query and documents are embedded independently by a transformer encoder (Huang et al., 2013; Karpukhin
+et al., 2020). Average pooling is applied over the outputs of the last layer to obtain one vector representation
+per query or document. A similarity score between the query and each document is then obtained by
+computing the dot product between their corresponding embeddings. The Contriever model is pre-trained
+using the MoCo contrastive loss (He et al., 2020), and uses unsupervised data only. As shown in the following
+section, an advantage of dense retrievers is that both query and document encoders can be trained without
+document annotation, using standard techniques such as gradient descent and distillation.
+Language model. For the language model, we rely on the T5 sequence-to-sequence architecture (Raﬀel
+et al., 2019). We rely on the Fusion-in-Decoder modiﬁcation of sequence-to-sequence models, and process
+each document independently in the encoder (Izacard & Grave, 2020). We then concatenate the outputs of
+the encoder corresponding to the diﬀerent documents, and perform cross-attention over this single sequence
+in the decoder. Following Izacard & Grave (2020), we concatenate the query to each document in the encoder.
+Another way to process the retrieved documents in the language model would be to concatenate the query
+and all the documents, and to use this long sequence as input of the model. Unfortunately, this approach
+does not scale with the number of documents, since the self-attention in the encoder results in a quadratic
+complexity with respect to the number of documents.
+3
+2.2 Training objectives for the retriever
+In this section, we discuss four diﬀerent loss functions to train the retriever jointly with the language model.
+We consider loss functions that leverage the language model to providesupervisory signalto train the retriever.
+In other words, if the language model ﬁnds a document useful when generating the output, the retriever
+objective should encourage the retriever to rank said document higher. This allows us to train models
+using only query and output pairs from the task of interest, without relying on document annotations. For
+example, in the case of fact checking, a model only requires pairs of claims and corresponding verdicts but no
+documents containing the evidence to back up the verdict. In practice, we can apply this approach on any
+task, including self-supervised pre-training. As shown in the experimental section, pre-training is critical for
+obtaining models that exhibit few-shot learning abilities.
+Attention Distillation (ADist). The ﬁrst loss that we consider is based on the attention scores of the
+language model, and is heavily inspired by Izacard & Grave (2021). The main idea is that the cross-attention
+scores between the input documents and the output, can be used as a proxy of the importance of each input
+document when generating the output. In particular, Izacard & Grave (2021) showed that these scores can
+be aggregated across attention heads, layers and tokens for a given document to obtain a single score for each
+document. Then, these scores can be distilled into the retriever by minimizing the KL-divergence with the
+probability distributionpretr over the top-K documents{dk}1,...,K obtained from the retriever:
+pretr (d| q) = exp(s(d, q)/θ)∑K
+k=1 exp(s(dk, q)/θ)
+, (1)
+wheres is the dot-product between the query and documents vectors andθ is a temperature hyper-parameter.
+In the original paper, it was proposed to use the pre-softmax scores from the decoder cross-attentions, and
+average across heads, layers and tokens. Here, we propose an alternative which gives slightly stronger results,
+which relies on the following observation. In the attention mechanism, as deﬁned by
+y =
+N∑
+n=1
+αnvn,
+the contribution to the outputy of a particular tokenn cannot be evaluated from the attention scoreαn
+alone, but should also take the norm of the valuevn into account. Hence, we use the quantityαn‖vn‖2 as the
+measure of relevance for tokenn. Following Izacard & Grave (2021), we average these scores over all attention
+heads, layers, and tokens to obtain a score for each document. We apply theSoftmax operator over the
+resulting scores, to obtain a distributionpattn(dk) over the top-K retrieved documents. We then minimize
+the KL-divergence betweenpattn(dk), and the distributionpretr from the retriever deﬁned in Equation 1:
+KL(pattn‖ pretr) =
+K∑
+k=1
+pattn(dk) log
+(pattn(dk)
+pretr(dk)
+)
+.
+Here, this loss is only used to optimize the parameters of the retriever, and not the language model. When
+using recent deep learning frameworks, this is achieved by applying aStopGradient operator onpattn.
+End-to-end training of Multi-Document Reader and Retriever (EMDR2). Next, we consider the
+method introduced by Sachan et al. (2021), which is inspired by the expectation-maximization algorithm,
+treating retrieved documents as latent variables. Given a queryq, the corresponding outputa and the set
+DK of top-K retrieved documents with the current retriever, the EMDR2 loss to train the retriever is
+log
+[ K∑
+k=1
+plm(a| q, dk)pretr(dk| q)
+]
+,
+where pretr is again the probability over the top-K documents obtained with the retriever, as deﬁned by
+Equation 1. Again, only the parameters of the retriever are updated by applying aStopGradient operator
+4
+around plm. One should note that the probability distribution over documents that maximizes this loss
+function is an indicator of the document corresponding to the highest probability of the output according to
+the language model. Finally, in practice, the EMDR2 loss function is applied at the token level, and not at
+the sequence level.
+Perplexity Distillation (PDist). Third, we discuss a simpler loss function which is loosely inspired by
+the objectives from the attention distillation and EMDR2 methods (Izacard & Grave, 2021; Sachan et al.,
+2021). More precisely, we want to train the retriever to predict how much each document would improve
+the language model perplexity of the output, given the query. To this end, we minimize the KL-divergence
+between the documents distribution of the retriever (Eqn. 1), and the documents posterior distribution
+according to the language model, using a uniform prior:
+pk∝pLM(a| dk, q).
+Using the Softmax operator, we have that
+pk = exp(logpLM(a| dk, q))∑K
+i=1 exp(logpLM(a| di, q))
+.
+Leave-one-out Perplexity Distillation (LOOP). Finally, we propose an objective based on how much
+worse the prediction of the language model gets, whenremoving one of the top-k retrieved documents. To
+do so, we compute the log probability of the output for each subset of k-1 documents, and use the negative
+value as relevance score for each document. Following the previous loss function, we use the softmax operator
+to obtain a probability distribution over documents:
+ploop(dk) = exp(− logpLM(a|D K\{ dk}, q))∑K
+i=1 exp(− logpLM(a|D K\{ di}, q))
+.
+As before, we then minimize the KL-divergence between this distribution, and the one obtained with retriever.
+This loss is more expensive to compute than PDist and EMDR, but, like ADist, employs the language model
+more closely to the way it is trained i.e. the LM is trained to be conditioned on a set ofK documents. For
+LOOP, the language model is conditioned on(K− 1) documents, rather than a single document as in EMDR2
+and PDist.
+For all losses, we can also use a temperature hyper-parameter when computing the target or retriever
+distributions to control the distribution’s peakiness of, which might be important for some tasks or losses.
+Indeed, for PDist and LOOP, the perplexity of the output may not vary much when conditioning on diﬀerent
+documents, especially in the case of long outputs.
+2.3 Pretext tasks
+In this section, we describe pretext tasks that can be used to jointly pre-train the retriever and the language
+model using only unsupervised data.
+Preﬁx language modeling. First, we consider a standard language modeling task as potential pre-training
+objective. To cast language modeling in the text-to-text framework, we consider a chunk ofN words, and split
+this chunk in two sub-sequences of equal lengthN/2. Then, the ﬁrst sub-sequence is used as the query, and
+the second corresponds to the output. We thus retrieve relevant documents by using the ﬁrst sub-sequence of
+N/2 tokens, to generate the output.
+Masked language modeling. Second, we consider masked language modeling, as formulated by Raﬀel
+et al. (2019). Again, starting from a chunk ofN words, we samplek spans of average length 3 tokens, leading
+to a masking ratio of15%. We then replace each span by a diﬀerent special token. The model is then trained
+to generate the masked spans, each span beginning with the special sentinel mask token that was inserted in
+the input sequence. We retrieve documents using the masked query, but replace the special mask tokens with
+a mask token supported by the retriever vocabulary.
+5
+Title to section generation. Finally, we consider a more abstractive generation task, generating sections
+from Wikipedia articles, given the article and section title. Here, the query corresponds to the title of the
+article, together with the title of the section, and the output corresponds to the text of the section. We
+exclude sections “See also”, “References”, “Further reading” and “External links”.
+2.4 Eﬃcient retriever ﬁne-tuning
+Retrieval is facilitated by using a documentindex, which is a pre-computed collection of the document
+embeddings for all the documents in the retrieval corpus. When jointly training the retriever and language
+model, the index needs to be updated regularly, otherwise, the embeddings of the documents stored in
+the index become stale relative to the updated retriever. This means that we need to recompute the
+embeddings for the full collection of documents regularly during training to keep the index fresh, which
+can be computationally expensive for large indices. This is particularly true atﬁne-tuning time, where the
+number of training examples could be small relative to the number of documents in the index. Training
+the retriever could thus add an important computational overhead compared to standard language model
+ﬁnetuning. In this section, we analyse strategies that might make this process more eﬃcient, alleviating the
+need to re-compute the embeddings of all the documents too often.
+Full index update. Let us start by analysing the overhead due to updating the index, compared to using a
+ﬁxed retriever. To compare the computation time of diﬀerent models, we will make the following assumption:
+the time required to perform a forward pass on a document with a model ofP parameters isO(P ). While this
+computation model may seem naive, the main assumption is that document sizes are constant.1 Since we split
+long documents into passages with similar number of words, and use padding when processing documents
+of diﬀerent sizes, this assumption is reasonable in practice. LetK be the number of documents that are
+retrieved and processed by the language model,Plm be the number of parameters of the language model and
+B the batch size. Each training step has a complexity of4×B×K×Plm.2
+Next, letN be the number of documents in the index, andPretr be the number of parameters of the retriever.
+Then, re-computing the full index has a complexity ofN×Pretr. If we refresh the index everyR training
+steps, we obtain the following overhead:
+N×Pretr
+4×B×K×Plm×R.
+If we use the BERT-base architecture for our retriever and T5-XL for our language model, we getPretrPlm ≈ 125,lading to the overhead:
+N
+100×B×K×R.
+If we use an index containing37M documents (the size of our Wikipedia index), train with a batch size of64
+with 20 retrieved documents and refresh the index every 1000 steps, this results in an overhead of∼ 30%.
+Re-ranking. A second strategy is to retrieve a larger number of documentsL with the retriever, and to
+re-embed and rerank these documents with the up-to-date retriever, and pass the resulting top-K to the
+language model. In that case, the overhead of reranking the top-L documents is equal toB×L×Pretr.
+Since we perform this operation at every time step, the overhead is equal to
+L×Pretr
+4×K×Plm
+.
+Using the same assumption as before, we ﬁnally get that the overhead is of the order ofL100×K. If we re-rank
+10x more documents than what the language model processes (i.e.,L = 10×K), we get an overhead of10%.
+However, note that if many updates are performed on the retriever, the index might still need to be fully
+1See Hoﬀmann et al. (2022) for more details about the computation of the FLOPS corresponding to the forward and backward
+passes of transformer networks.
+2There is a factor 4 to account for the backward pass and activation checkpointing.
+6
+updated, as the true top-k documents may not be retrieved in the top-L results from the stale index. In
+practice, it is possible to track the positions of the top-K re-ranked documents in the top-L, and estimate
+when the index needs to be updated.
+Query-side ﬁne-tuning. Finally, the last strategy is to decouple the encoding of the queries and documents.
+In this case, we ﬁx the parameters corresponding to the document encoder, and only train the parameters
+corresponding to the query encoder. Thus, the embeddings of documents are ﬁxed, and we do not need to
+refresh the index, and thus there is no computational overhead. As we will see in practice, the impact of
+ﬁxing the documents encoder varies greatly for diﬀerent tasks when a large training dataset is available. For
+most of the few-shot settings that we consider, query-side ﬁnetuning does not have large performance impact,
+and sometimes even slightly improves performance.
+3 Related work
+3.1 Retrieval in natural language processing
+Retrieval for knowledge intensive tasks.Previous work has shown that retrieval improves performance
+across a variety of tasks such as question answering (Voorhees et al., 1999; Chen et al., 2017; Kwiatkowski et al.,
+2019), fact checking (Thorne et al., 2018), dialogue (Dinan et al., 2019) or citation recommendation (Petroni
+et al., 2022). Historically, this information retrieval step was implemented using term-matching methods, such
+as TF-IDF or BM25 (Jones, 1972; Robertson et al., 1995). For open-domain question answering (Voorhees
+et al., 1999), documents are often retrieved from Wikipedia (Chen et al., 2017). Recently, dense retrievers
+based on neural networks have become popular. These usually follow a dual-encoder architecture (Yih et al.,
+2011; Huang et al., 2013; Shen et al., 2014), where queries and passages are encoded independently as vectors,
+and relevance is computed using the inner product or Euclidean distance. Popular supervised retrievers
+include DPR (Karpukhin et al., 2020), which is trained to discriminate the relevant passage among negative
+passages, and extensions such as ANCE (Xiong et al., 2020) which improved the hard negatives mining
+process. We refer the reader to Yates et al. (2021) for a survey of dense retrieval techniques.
+After retrieval, the relevant documents are processed to produce the ﬁnal output. In open-domain QA, models
+can extract a span of text from retrieved documents as the answer (Chen et al., 2017; Clark & Gardner, 2018;
+Wang et al., 2019; Karpukhin et al., 2020), a method inspired by reading comprehension (Richardson, 2013;
+Rajpurkar et al., 2016). Recently, generating the answer as free-form text, using a seq2seq model conditioned
+on retrieved documents have become prevalent (Lewis et al., 2020; Izacard & Grave, 2020; Min et al., 2020).
+These architectures have also been shown to reduce hallucination in dialogue agents (Shuster et al., 2021).
+Retriever training. The need for expensive query-document annotations for training the retriever can be
+bypassed, by leveraging signals from the language model, or using unsupervised learning. REALM (Guu et al.,
+2020) and RAG (Lewis et al., 2020) jointly train the retriever and language model by modelling documents as
+latent variable, and minimizing the objective with gradient descent. REALM pre-trains end-to-end with an
+MLM approach but uses an extractive BERT-style model (Devlin et al., 2019). Guu et al. (2020) also explore
+a query-side ﬁnetuning at ﬁnetuning time to avoid index refreshes, which is also explored in the context of
+phrase-based retrieval by Lee et al. (2021b). Izacard & Grave (2020) proposed to use cross-attention scores
+as supervision with knowledge distillation. Sachan et al. (2021) perform joint training of the reader and the
+retriever by leveraging the perplexity of the output generated by the reader. Sachan et al. (2021) and Lee
+et al. (2021a) both employ salient span masking to pre-train retrievers, leveraging the perplexity and attention
+scores from the language model. Theinverse cloze taskwas proposed by Lee et al. (2019) to pre-train dense
+retrievers in an unsupervised way. Paranjape et al. (2021) propose a method to train retrieval-augmented
+generators using a second “informed” retriever with access to the output, which the test-time retriever can be
+distilled from, and Hofstätter et al. (2022) recently proposed a training set ﬁltering/weighting approach to
+train stronger retrieval-augmented generators. Izacard et al. (2022) explored diﬀerent contrastive learning
+methods to train retrievers, while Ram et al. (2022) used recurring spans within a document to create
+pseudo-positive query-document pairs.
+7
+Retrieval-augmented language models. Continuous cache models (Grave et al., 2017b) deﬁnes a
+probability distribution over recent tokens, by computing the similarity between previous and current
+representations of tokens. This distribution is then interpolated with the distribution of the language model,
+to improve predictions. Later, the amount of tokens used to compute this distribution was extended to a much
+larger memory by leveraging approximate nearest neighbors search (Grave et al., 2017a). The related kNN-LM
+model (Khandelwal et al., 2020) replaced LSTMs by transformer networks, and scaled the memory to billions
+of tokens, leading to strong performance improvements. More recently, RETRO (Borgeaud et al., 2021)
+extended these by scaling the retrieval memory to trillions of tokens, and changing the model architecture to
+take retrieved documents as input.
+Retrieval-Augmentation with Search Engines. Recently, diﬀerent works have proposed to train large
+language models to interact with a search engine, by generating text queries, and using the retrieved documents
+as additional context (Nakano et al., 2021; Thoppilan et al., 2022; Shuster et al., 2022). In the context
+of few-shot question answering, Lazaridou et al. (2022) used the question to perform a search query, and
+retrieved documents are added to the prompt of a large language model performing in-context learning.
+3.2 Few-shot learning
+Few-shot learning, the task of learning from very few examples, has been studied for decades (Thrun & Pratt,
+1998; Fink, 2005; Vinyals et al., 2016), but has recently seen an explosion of interest in NLP with the arrival
+of large pre-trained models, which exhibit emergent few-shot learning abilities (Wei et al., 2022).
+In-context Learning with large Language models.Providing language models with natural language
+descriptions of tasks, as proposed by Radford et al. (2019) has led to signiﬁcant developments in few-shot
+learning. GPT-3 (Brown et al., 2020) demonstrated the ability of large language models to perform few-shot
+predictions, where the model is given a description of the task in natural language with few examples. Scaling
+model size, data and compute is crucial to enable this learning ability, leading to the further development of
+large models (Lieber et al., 2021; Rae et al., 2021; Smith et al., 2022; Chowdhery et al., 2022; Smith et al.,
+2022). Hoﬀmann et al. (2022) revisited the scaling law from Kaplan et al. (2020), suggesting that training on
+more data with a smaller model may be more eﬀective, resulting in Chinchilla, a 70B parameter model with
+improved parameter eﬃciency.
+Few-shot ﬁnetuning and prompt-based learning.The above models perform few-shot learning with
+in-context instructions without training the parameters of the language model. Few-shot learning can also
+be accomplished by combining textual templates (“prompts”) and various forms of model ﬁnetuning, either
+fully updating a model’s parameters, e.g. for classiﬁcation (Schick & Schütze, 2021a; Schick & Schutze, 2021;
+Gao et al., 2021; Tam et al., 2021) or generation (Schick & Schütze, 2021b). Prompts themselves can be
+optimized, for example by search (Jiang et al., 2020; Shin et al., 2020) or by only updating parts of the
+model (Logan et al., 2021), or learning “soft-prompts” (Lester et al., 2021; Li & Liang, 2021). Due to its
+simplicity, in this work we either employ simple prompts or simply feed in inputs without preprocessing, and
+perform full-model ﬁnetuning, a method similar to Le Scao & Rush (2021).
+4 Experiments
+In this section, we report empirical evaluations of our language models on few-shot learning. We start by
+introducing our experimental setup, describing our evaluation benchmarks in section 4.1, and giving the
+training details of our models in section 4.2. Then, we perform an ablation study to compare the diﬀerent
+technical choices leading to our main model. We ﬁnally evaluate this model, calledAtlas, on diﬀerent
+natural language understanding tasks in few-shot and full dataset settings.
+4.1 Benchmarks
+To evaluate our retrieval-augmented language models we consider the following benchmarks, which include
+diﬀerent tasks.
+8
+Knowledge-Intensive Language Tasks (KILT).First, we use the KILT evaluation suite (Petroni et al.,
+2020), containing 11 datasets corresponding to 5 tasks: fact checking, question answering, dialog generation,
+entity linking and slot-ﬁlling. These diﬀerent tasks require knowledge about the world to be solved, which can
+be found in Wikipedia. We evaluate our model on the following tasks and datasets included in KILT: question
+answering: NaturalQuestions (Kwiatkowski et al., 2019), TriviaQA (Joshi et al., 2017) and HotpotQA (Yang
+et al., 2018); slot ﬁlling: Zero Shot RE (Levy et al., 2017) and T-REx (Elsahar et al., 2018); entity linking:
+AIDA CoNLL-YAGO (Hoﬀart et al., 2011); dialogue: Wizard of Wikipedia (Dinan et al., 2019); and fact
+checking: FEVER (Thorne et al., 2018). The KILT versions of these datasets diﬀer from their original versions,
+as instances requiring knowledge not present in the August 2019 Wikipedia dump have been removed.
+Massively-Multitask Language Understanding (MMLU). Our second main evaluation benchmark
+is MMLU (Hendrycks et al., 2021), which contains 57 multi-choice question answering datasets (referred
+to as domains), sourced from real examinations designed for humans. These cover a very broad range of
+topics, e.g. high school mathematics, professional law, logical fallacies and clinical knowledge and can be
+broadly categorized in four subsets: humanities, social sciences, STEM and “other”. We focus on few-shot
+learning, and the authors of the benchmarks suggest to use 5 training examples per domain. Beyond the
+5-shot setting, We also consider three additional settings. The ﬁrst is azero-shot setting, with no training
+data at all. The second, which we callmulti-task few-shot, is where we train a single model on the 6-shot
+data from all tasks, hence leading to a training set of 285 examples. The last, which we calltransfer learning,
+leverages additional training examples from other multiple-choice QA tasks provided by the MMLU authors,
+namely MCTest (Richardson, 2013), RACE (Lai et al., 2017), ARC (Clark et al., 2018) and OBQA (Mihaylov
+et al., 2018) leading to a training set of 95k examples.
+Additional benchmarks. Additionally, we report results on the original open-domain versions of the
+popular NaturalQuestions (Kwiatkowski et al., 2019), and TriviaQA (Joshi et al., 2017) datasets. We also
+evaluate our model on the original version of FEVER (Thorne et al., 2018), which presents fact checking as a
+three-way classiﬁcation problem for textual claims (either “Supported”: the text is supported by evidence in
+Wikipedia, “refuted”: the claim is not consistent with evidence in Wikipedia, or “not enough info”, where
+there is insuﬃcient evidence to make a judgement). We also perform experiments to assess temporal sensitivity
+of our models. Here, we construct a dataset from TempLAMA (Dhingra et al., 2022), consisting of a set of
+time-sensitive cloze questions on a range of topics, where the answer changes from 2017 to 2020. We assess
+the accuracy of our models when supplied with a index from 2017 vs 2020 to assess to what degree models
+faithfully reﬂect the content of the index supplied to them at test time, and how eﬀective updating the index
+is as acontinual learningor model updateability method.
+4.2 Technical details
+We now describe the procedure for pre-training and ﬁne-tuning our models. We focus on the setting used for
+the ablation studies performed in Section 4.3 and Section 4.4. We give more details about the hyperparameters
+used for our ﬁnal model later.
+Pre-training. For the pre-training, we initialize the retriever module using the unsupervisedContriever
+model, which uses the BERT-base architecture. We initialize the language model with the T5 pre-trained
+weight. As the original T5 pre-trained model included supervised data in the training set, we use the version
+1.1 models which were trained on unlabeled text only. Speciﬁcally, we initialize from theT5-lm-adapt
+variants due to their improved stability.
+For the ablation studies performed in Section 4.3 and Section 4.4, we use T5-XL which contains 3B weights.
+We pre-train all our models for 10,000 iterations, using AdamW with a batch size of 64 and a learning rate of
+10−4 for the reader and10−5 for the retriever with linear decay and 1,000 warmup steps. We refresh the
+index every 1,000 steps. This means that the index is recomputed 10 times during the pre-training, leading
+to an overhead of around 30%, compared to training with a ﬁxed retriever. We set the number of retrieved
+documents to 20. We detail the hyperparameters used for the training of our ﬁnal model at the beginning of
+Section 4.5.
+9
+Table 1:Retriever loss ablation.We compare diﬀerent loss functions to pre-train the retriever jointly
+with the language model. We use the preﬁx MLM task, and the December 2021 Wikipedia dump for both
+the index and pre-training data. Fine-tuning is performed with query-side ﬁne-tuning and the loss used for
+pre-training. Best result is bold, second highest underlined.
+64-shot 1024-shot
+MLM NQ WoW FEVER Avg. NQ WoW FEVER Avg.
+Closed-book 1.083 6.5 14.1 59.0 26.5 10.7 16.5 75.3 34.2
+No Joint pre-training - 9.0 14.1 67.0 30.0 9.9 16.6 78.3 34.9
+Fixed retriever 0.823 39.9 14.3 72.4 42.2 45.3 17.9 90.0 51.1
+ADist 0.780 40.9 14.4 73.8 43.0 46.2 17.2 90.9 51.4
+EMDR2 0.783 43.3 14.6 72.1 43.3 44.9 18.3 85.7 49.6
+PDist 0.783 45.0 15.0 77.0 45.7 44.9 17.9 90.2 51.0
+LOOP 0.766 41.8 15.0 74.4 43.7 47.1 17.9 87.5 50.8
+Fine-tuning. When performing a downstream task, either in a few-shot setting or with a large training set,
+we employ ﬁne-tuning to adapt our models to these tasks. For the few-shot KILT ablation experiments, we
+perform a ﬁxed number of ﬁne-tuning iterations, instead of using early-stopping. More precisely, we decided
+to use 50 iterations for the 64-shot setting and 200 iterations in the 1024-shot setting. In both cases, we use
+a batch size of32 examples, a learning rate of4× 10−5 with linear decay and 5 warmup steps for both the
+reader and the retriever.
+Unlabeled datasets. Finally, we discuss the unlabeled text datasets that we use to train our models,
+which form the retrieval index. First, we consider the Dec. 20, 2021 Wikipedia dump, for which we keep
+the lists and infoboxes, which are linearized by adding a semi-colon separator between the entries. We split
+articles by section, and split long sections into passages of equal sizes and containing less than 200 words.
+This leads to a total of 37M passages, containing 78 words in average. We also use documents from the
+2020-10 common crawl dump, preprocessed with the CCNet pipeline (Wenzek et al., 2020). We perform
+additional document ﬁltering, in a similar fashion to Gopher (Rae et al., 2021). More precisely, we ﬁlter
+documents based on document length, average word length, ratio of alphanumeric characters and number
+of repeated tokens. This leads to a total of 350M passages. The same passages are used for the index and
+model pre-training. During pre-training, we ensure the passage we are training on is ﬁltered out from the
+retrieved documents, to prevent the model from simply retrieving the passage it is de-nosing/generating, and
+trivially using it to solve the pre-training task.
+4.3 Pre-training loss and tasks
+We start our ablation study by comparing diﬀerent pre-training tasks, and objective functions to jointly train
+the retriever and the language model. Our goal here is to answer the following research questions:
+(RQ 1) Does jointly pre-training the whole model lead to better few-shot performance?
+(RQ 2) What is the best objective function for the retriever, and the best pretext task?
+We start by comparing the training objectives of the retriever, introduced in Section 2.2, by pre-training
+models using the masked language modelling task. We evaluate these models on a subset of the 64-shot
+and 1024-shot KILT benchmark: NaturalQuestions, FEVER and Wizard of Wikipedia, along with two
+baselines: a ‘closed-book” (i.e. non-augmented T5) baseline, pre-trained on the same data, and initialized
+from Contriever and T5-lm-adapt. We report results in Table 1. First, we note the poor performance of
+the closed-book baseline, indicating the importance of augmentation. Next, we observe that pre-training
+our model with retrieval is important to obtain good performance on few-shot tasks. Indeed, all models
+that include retrieval during pre-training strongly outperform the baseline without joint pre-training. Next,
+10
+Table 2:Pretext task ablation.We compare diﬀerent pretext tasks, used to jointly pre-train our models.
+Examples are randomly sampled from the training set of the KILT version of the dataset. We report the
+exact match on NaturalQuestions, the F1 score on Wizard of Wikipedia and the accuracy on FEVER.
+64-shot 1024-shot
+NQ WoW FEVER Avg. NQ WoW FEVER Avg.
+Preﬁx Language Modelling 41.0 14.5 64.9 40.1 44.7 17.9 86.0 49.5
+Masked Language Modelling 42.7 14.9 69.7 42.4 44.7 18.3 88.8 50.6
+Title-to-section generation 41.1 15.2 66.1 40.8 45.4 17.9 84.6 49.3
+Table 3:Index content ablation.In this table, we report results for models where the content of the index
+was changed between the pre-training and the ﬁne-tuning.
+64-shot 1024-shot
+Index Training data NQ WoW FEVER Avg. NQ WoW FEVER Avg.
+Wiki Wiki 42.7 14.9 69.7 42.4 44.7 18.3 88.8 50.6
+Wiki CC 40.9 15.3 67.3 41.2 44.8 18.4 88.1 50.4
+CC Wiki 32.9 14.5 72.1 39.8 37.8 17.1 85.8 46.9
+CC CC 38.4 14.9 70.1 41.1 42.0 17.3 88.9 49.4
+we compare a model that was pre-trained with a ﬁxed retriever, and models using the various retriever
+training objectives. On the MLM validation metric corresponding to the pre-training objective, we observe
+that jointly training the retriever leads to strong improvements. This eﬀect tends to be less marked on
+64-shot downstream tasks, and almost non-existent for 1024-shot. We believe that this is evidence that the
+biggest impact of pre-training is on the language model, which learns to use and aggregate information from
+the retrieved documents. Lastly, we do not observe signiﬁcant systematic diﬀerences between the diﬀerent
+retriever training objectives. We thus decide adopt use Perplexity Distillation for subsequent experiments, as
+it tends to be more stable than EMDR2 or ADist, and more computationally eﬃcient than LOOP.
+Next, we compare the diﬀerent self-supervised pretext tasks introduced in Section 2.3 in Table 2. Here we
+observe similar results for all three tasks, with a small advantage for masked language modelling. Thus, in
+what follows, we adopt masked language modelling for pre-training.
+Finally, we consider diﬀerent combinations of data sources—Wikipedia and common crawl—for the index
+and training data during pre-training. In all cases, we use the Wikipedia 2021 dump as the index when
+performing few-shot ﬁne-tuning. We report results in Table 3. First, we observe that using a Wikipedia-based
+index leads to better downstream performance. There could be two explanations for this: ﬁrst, as we use
+Wikipedia for the few-shot tasks, the model might be better adapted when trained using the same data.
+Another explanation might be that Wikipedia is a higher-quality and denser source of knowledge than
+common crawl. Second, when using a common crawl index, we observe that pre-training on Wikipedia data
+leads to lower performance than using common crawl data. We believe that the primary reason is that the
+distribution mismatch between the two domains leads to generally-less relevant retrieved documents. In turn,
+this probably means that the pre-training is less eﬃcient, because the language model does not leverage as
+much information from the documents. In the following, we thus decide to combine the data from both
+domains for both the index and the pre-training data.
+4.4 Fine-tuning
+In this section, we perform an ablation study on how to apply our models on downstream tasks, which relies
+on ﬁne-tuning. In particular, we want to investigate the following research question:
+(RQ 3) How to eﬃciently ﬁne-tuneAtlason tasks with limited training data?
+11
+Table 4:Retriever ﬁne-tuning ablation.Here, we compare diﬀerent strategies to ﬁne-tune the retriever
+in a few-shot setting.
+64-shot 1024-shot
+NQ WoW FEVER Avg. NQ WoW FEVER Avg.
+Standard ﬁne-tuning 44.3 14.9 73.2 44.1 47.0 18.4 89.7 51.7
+Top-100 re-ranking 44.2 14.6 75.4 44.7 47.1 18.7 88.9 51.6
+Query-side ﬁne-tuning 45.0 15.0 77.0 45.7 44.9 17.9 90.2 51.0
+Fixed retriever 36.8 14.5 72.0 41.1 38.0 17.7 89.3 48.3
+Table 5:Performance on MMLU as a function of model size.
+5-shot 5-shot (multi-task) Full / Transfer
+770M 3B 11B 770M 3B 11B 770M 3B 11B
+Closed-book T5 29.2 35.7 36.1 26.5 40.0 43.5 42.4 50.4 54.0
+Atlas 38.9 42.3 43.4 42.1 48.7 56.4 56.3 59.9 65.8
+∆ +9.8 +6.6 +7.3 +15.6 +8.7 +12.9 +13.9 +9.5 +11.8
+To answer this question, we compare the diﬀerent strategies to ﬁne-tune the retriever module, described in
+Section 2.4. We report results in Table 4. First, as for pre-training, we observe that keeping the retriever
+ﬁxed during ﬁne-tuning leads to a signiﬁcant performance drops, for both 64- and 1024-shot settings. Second,
+the re-ranking strategy (row 2) leads to very similar results to fully updating the index (row 1), while
+being signiﬁcantly more eﬃcient. Lastly, ﬁne-tuning only the query encoder also leads to strong results: in
+particular, in the 64-shot setup, this is slightly stronger than performing full ﬁne-tuning, which we attribute
+to there being less opportunity for over-ﬁtting. On the other hand, on the 1024-shot setting, performing a full
+ﬁne-tuning leads to stronger results, especially on NaturalQuestions. In the following, we thus use query-side
+ﬁne-tuning for experiments with small numbers of examples, and standard ﬁne-tuning for larger datasets.
+4.5 Training and evaluating Atlas
+In this section, we apply the ﬁndings from the ablations of the previous sections to train a family of
+Atlasmodels, ranging from 770M to 11B parameters. More speciﬁcally, we use the Perplexity Distillation
+objective function, along with the masked language modelling pretext task. We pre-train these models using a
+mix of Wikipedia and Common Crawl data, for both the training data and content of the index. We retrieve
+20 documents, and update the index every 2,500 steps and perform re-ranking of the top-100 documents. We
+pre-train models for 10,000 iterations using AdamW with a batch size of 128.
+4.5.1 MMLU Results
+As mentioned in section 4.1, we consider four setting for MMLU: 1) a zero-shot setting where we directly
+apply the pretrained model with no few-shot ﬁnetuning 2) a 5-shot setting, where we ﬁnetune a model using
+5 training examples for each of the 57 domains 3) a 5-shot multitask setting, where, rather than ﬁnetuning a
+model independently for each domain, we train a single model to perform all tasks and 4) a setting with
+access to a number of auxiliary datasets, with 95K total training examples. We train the models to generate
+the letter corresponding to the correct answer option (‘A’, ‘B’, ‘C’ or ‘D’), and pick the answer with the most
+likely of the 4 letters at test time. Full technical details can be found in appendix A.1.
+Performance vs Parameters. We start by comparingAtlas to closed-book models of diﬀerent sizes
+for 5-shot, 5-shot multitask and the full setting, and report results in Table 5. Across these settings,
+Atlasoutperforms the closed-book baselines by between 6.6 and 15.6 points, demonstrating consistent utility
+of retrieval for few-shot language understanding across 57 domains. The closed-book T5 struggles to perform
+12
+Table 6:Standard vs de-biased inference for MMLUThese results are reported forAtlas-11B, using
+cyclic permutations for de-biasing, which increases inference costs by a factor of 4×.
+Zero-shot 5-shot 5-shot (multi-task) Full / Transfer
+Standard Inference 36.8 43.4 56.4 65.8
+De-biased Inference 47.1 47.9 56.6 66.0
+signiﬁcantly better than random (25%) in few-shot settings with 770M parameters, whereas the equivalent
+Atlas achieves around 40%, signiﬁcantly better than random, despite its small size. All models improve
+with more data, but interestingly, the 770M models do not beneﬁt as much from few-shot multitask learning
+compared to larger models (for closed-book, it actually loses 3 points) suggesting smaller models struggle to
+grasp the synergies between the tasks in the few-shot setting. Larger models exploit the multi-task setting
+well, with Atlas improving more than closed-book. For example,Atlas-11B improves by 13 points (43.4→
+56.4), but equivalent closed-book only improves by 7 (36.1→ 43.5). Finally, on the transfer learning setting,
+all models improve, but the relative gaps between closed-book atAtlasmodels remain similar.
+De-biasing. When ﬁnetuning, we permute which answer option appears with which answer letter to reduce
+over-ﬁtting and encourage a uniform prior over answer letters. However, the model may still exhibit a bias
+towards some letters, especially in few-shot settings, so we also include a second ‘de-biased’ inference mode in
+addition the standard inference used above. Here, we run 4 forward passes, one for each cyclic permutation
+of the answer letter-answer option assignment in the question, e.g. the answer option assigned to letter ‘A’
+becomes ‘B’, what was ‘B’ becomes ‘C’ etc.3 We then sum the 4 probabilities to obtain the ﬁnal prediction,
+which reduces spurious bias towards one of the answer letters (further details in appendix A.1). The results
+are shown in Table 6. We ﬁnd that in zero-shot and 5-shot settings, de-biasing is very eﬀective, improving
+results by 10.3 and 4.5 points respectively. When more training data is available, the need for de-biasing
+decreases, leading to only 0.2 point improvement in the multi-task and full data settings.
+Comparison to published works Next, we compare ourAtlas-11B results with de-biasing to recently
+reported results with state-of-the-art large language models such as GPT-3 or Chinchilla, which required
+signiﬁcantly more amount of computation to train. We report results in Table 7. We ﬁnd thatAtlas is able
+to perform signiﬁcantly better than random in zero-shot, and in conjunction with de-biased inference, achieves
+zero-shot scores that exceed 5-shot results reported with GPT3 in the literature (47.1% vs 43.9%) (Hendrycks
+et al., 2021). For the 5-shot setting,Atlas outperforms GPT-3 by 4%, while using 15× less parameters, and
+10× less pre-training compute.4 When multitask-training on the combined 5-shot data,Atlasimproves to
+56.6% close to the 5-shot performance of Gopher (60.0%). Finally, on the full data setting, where we train on
+auxiliary data recommended by the MMLU authors,Atlasreaches an overall accuracy of 65.6%, close to
+the state-of-the-art. Interestingly, in this setup,Atlas signiﬁcantly outperforms GPT-3, while on the 5-shot
+setting, their performance is similar.
+4.5.2 Open-domain Question Answering Results
+Next we evaluate Atlas on two open-domain question answering benchmarks: NaturalQuestions and
+TriviaQA. We compare to prior work, both in a few-shot setting using 64 examples, and using the full training
+set, and report results in Table 8. On these benchmarks, which require high-degree of memorisation, we
+clearly see the beneﬁts of retrieval-augmentation.Atlas-11B obtains state-of-the-art results on 64-shot
+question answering, for both NaturalQuestions and TriviaQA. In particular, it outperforms signiﬁcantly larger
+models, such as PaLM, or models that required signiﬁcantly more training compute such as Chinchilla. When
+using the full training set,Atlasalso obtains state-of-the-art results, for example improving the accuracy
+on NaturalQuestions from 55.9% to 60.4%. This result is obtained using an index comprised of CCNet and
+3Exploring all answer option permutations would involve 24 forward passes, which improves results by an additional∼1%
+over the 4 cyclic permutations, but requires much more compute, so we exclude it here, see Appendix A.1
+4Atlas’s pre-training compute is dominated by the T5 pre-training. The computational requirements for the retrievalaugmented pre-train is orders of magnitude lower
+13
+Table 7:Comparison to state-of-the-art on MMLU.∗For the 5-shot setting,Atlasuses ﬁne-tuning,
+while previous works use in-context learning. TheAtlasmodel uses de-biased inference. Train FLOPS refers
+to total the amount of computation necessary to train the model, including pre-training and/or ﬁne-tuning.
+Setting Model Params Train FLOPS All Hum. Soc. Sci. STEM Other
+zero-shot Atlas 11B 3.5e22 47.1 43.6 54.1 38.0 54.4
+5-shot
+GPT-3 175B 3.1e23 43.9 40.8 50.4 36.7 48.8
+Gopher 280B 5.0e23 60.0 56.2 71.9 47.4 66.1
+Chinchilla 70B 5.0e23 67.5 63.6 79.3 55.0 73.9
+Atlas∗ 11B 3.5e22 47.9 46.1 54.6 38.8 52.8
+5-shot (multi-task) Atlas 11B 3.5e22 56.6 50.1 66.4 46.4 66.2
+Full / Transfer
+UniﬁedQA 11B 3.3e22 48.9 45.6 56.6 40.2 54.6
+GPT-3 175B 3.1e23 53.9 52.5 63.9 41.4 57.9
+Atlas 11B 3.5e22 66.0 61.1 77.2 53.2 74.4
+Table 8:Comparison to state-of-the-art on question answering.We report results on NaturalQuestions, and on TriviaQA for both the ﬁltered set, commonly used for open-domain question answering
+and the unﬁltered hidden set for which evaluation is accessible online:https://competitions.codalab.org/
+competitions/17208. For the 64-shot setting, our model uses ﬁne-tuning, while the other models use prompting.
+NQ TriviaQA ﬁltered TriviaQA unﬁltered
+Model 64-shot Full 64-shot Full 64-shot Full
+GPT-3 (Brown et al., 2020) 29.9 - - - 71.2 Gopher (Rae et al., 2021) 28.2 - 57.2 - 61.3 Chinchilla (Hoﬀmann et al., 2022) 35.5 - 64.6 - 72.3 PaLM (Chowdhery et al., 2022) 39.6 - - - 81.4 RETRO (Borgeaud et al., 2021) - 45.5 - - - FiD (Izacard & Grave, 2020) - 51.4 - 67.6 - 80.1
+FiD-KD (Izacard & Grave, 2021) - 54.7 - 73.3 - R2-D2 (Fajcik et al., 2021) - 55.9 - 69.9 - Atlas 42.4 60.4 74.5 79.8 84.7 89.4
+the December 2021 Wikipedia corpora, our default setting for the index. In section 5.2 we consider using
+indexes composed of Wikipedia corpus archived at diﬀerent dates, and demonstrate an additional +3.6%
+on NaturalQuestions when using an index which is temporally matched to NaturalQuestions. We report
+performance as a function of model size as well as detailed hyperparameters in Appendix A.2.
+Atlasalso compares favorably to recent work exploring retrieval-augmented few-shot question answering
+with very large models. Lazaridou et al. (2022) explore NaturalQuestions in a 15-shot setup using Gopher,
+augmenting questions with 50 passages retrieved using Google Search. This method consists of generating
+4 candidate answers from each retrieved passages, and then re-ranking using either a score inspired by
+RAG (Lewis et al., 2020) or a more expensive approach. This method (not shown in our tables) achieves
+exact match scores of 32.7% (RAG) and 38.4% (Ensemble), requiring 50 (RAG) or 450 (Ensemble) forward
+passes of Gopher-280B per test-time question.Atlas, using the same 15 training examples and 50 passages
+achieves 38.7 EM, despite having 25× fewer parameters, and requiring comparatively negligible compute.
+4.5.3 FEVER Results
+We report results on the original 3-class FEVER fact checking test set in Table 9. We consider a 64-shot
+setting, with training examples uniformly sampled from the full training set. Unlike the development and
+test sets, the train set is imbalanced, with more positive labels than negative, posing a challenge for few-shot
+14
+Table 9: Comparison to state-of-the-art on FEVER.We report accuracy on FEVER test set, for
+which evaluation is available here:https://competitions.codalab.org/competitions/18814. For the few-shot
+settings, our model uses ﬁne-tuning while other models use prompting.†uses an index composed of the
+FEVER Wikipedia corpus.
+15-shot 65-shot Full dataset
+Gopher (Rae et al., 2021) 51.1 - ProoFVer (Krishna et al., 2021) - - 79.5
+Atlas 56.2 64.3 78.0 /80.1†
+Table 10:Downstream results on the KILT hidden test setsDownstream metrics are accuracy (AIDA
+CoNLL-YAGO, FEVER, T-REx, zero-shot RE), exact match (Natural Questions, HotpotQA, TriviaQA), or
+F1 (Wizard of Wikipedia).
+Model AIDA FEV T-REx zsRE NQ HoPo TQA WoWacc acc acc acc em em em f1
+GENRE (Cao et al., 2021) 89.9 - - - - - - Sphere (Piktus et al., 2021) - 89.0 81.7 74.2 51.6 38.3 72.7 15.5
+SEAL (Bevilacqua et al., 2022) - 89.5 83.6 74.6 53.7 40.5 70.9 18.3
+Re2G (Glass et al., 2022) - 89.6 87.7 - 51.7 - 76.3 18.9
+FID with RS (Hofstätter et al., 2022) - 92.2 85.2 83.7 61.2 39.1 84.6 20.6
+Atlas, 64-shot 66.5 87.1 58.9 74.9 43.6 34.7 76.4 15.5
+Atlas, full train set 90.6 93.5 85.1 80.8 61.3 50.6 84.0 21.6
+learning. In this setting, we achieve an accuracy of 64.3%. We also report a 15-shot setting, with 5 examples
+uniformly sampled from each class to compare with published results from Gopher (Rae et al., 2021), where
+Atlas scores 56.2%, outperforming Gopher by 5.1 points. Lastly we ﬁne-tune our model on the full training
+set, and achieve a score of 78%, within 1.5% of the ProoFVer, which uses a specialized architecture, a retriever
+trained with sentence-level annotations, and is supplied with the Wikipedia corpus released with FEVER,
+whereas Atlasretrieves from CCNet and the December 2021 Wikipedia dump. If we giveAtlasan index
+comprised of the FEVER Wikipedia corpus, we set a new state-of-the-art of 80.1%
+4.5.4 KILT Results
+Finally we evaluateAtlason KILT, a benchmark composed of several diﬀerent knowledge intensive tasks,
+which was described in section 4.1. We report results on test sets in Table 10 for which evaluation is available
+online5. The KILT versions of datasets are ﬁltered, and thus results for datasets we have evaluated elsewhere
+are not directly comparable on KILT (i.e. FEVER, NQ and TQA). We consider both a 64-shot setting and
+a full ﬁne-tuning setting, in both cases we trainAtlas individually on each dataset. More details on the
+hyperparameters and development set results are reported in Appendix A.3. For 64-shot, we greatly exceed
+random performance, and are even competitive with some fully-ﬁnetuned models on the leaderboard, such as
+for FEVER, where our 64-shotAtlas is only 2-2.5 points behind Sphere, SEAL and Re2G, and outperforms
+Sphere and SEAL on zero-shot RE. In the full dataset setting,Atlas is within 3% to the state-of-the-art for
+3 datasets, and sets the state-of-the-art in the remaining ﬁve datasets.
+5https://eval.ai/web/challenges/challenge-page/689
+15
+Hum. Soc Sci. STEM Other All0
+20
+40
+60
+80
+100% of Retrieved Passages
+CCNet
+Wiki Text
+Wiki Infobox
+1 5 10 15 20 25
+Top K Retrieved Documents
+15
+20
+25
+30% of Retrieved Passages
+[0, 1) [1, 2) [2, 4) [4, 8) [8, 16)[16, )
+Answer frequency in retrieved docs (interval)
+0
+20
+40
+60
+80MMLU Accuracy (%)
+Figure 3:MMLU Retrieval Analysis. Left: Fraction of sources of top 30 retrieved passages for MMLU
+from CCNet, Wikipedia passages and info boxes for the 5-shot multitaskAtlas. Center: How often the text
+of the correct MMLU answer option appears in retrieved passages, as a function of the number of retrieved
+passages. Right: MMLU accuracy as a function of answer occurrence frequency in retrieved passages set
+5 Analysis
+5.1 Interpretability and Leakage
+An advantage of semi-parametric models likeAtlas is the ability to inspect retrieved items to aid interpretability. To better understand how wellAtlasretrieves, and how it uses retrieved passages, we examine
+the retrieved passages for multi-task few-shot MMLU. As shown in the left panel of Figure 3, the model
+retrieves the majority of its passages from CCNet (85% on average). Wikipedia makes up about 15% of
+retrieved passages, which is higher than we would expect under a uniform prior, given Wikipedia only makes
+up about 10% of the index. The fraction of Wikipedia retrieval varies between MMLU domains, with the
+model using Wikipedia to a greater extent for STEM domains, and least for social sciences. The domain
+making the greatest use of Wikipedia is “abstract algebra” (73%), and the least is “moral scenarios” (3%).
+We also note that the MMLU-ﬁnetunedAtlas does not make signiﬁcant use of Wikipedia infobox passages.
+We can also analyse the content of passages to assess how they may useful for accomplishing the downstream
+task. The middle panel of Figure 3 shows how often retrieved documents contain the text of the correct
+answer option. There being at least one mention of the correct answer choice in 30% of test questions in the
+top 25 passages.6 The right panel shows that the accuracy on MMLU increases when the correct answer
+option text occurs more frequently in retrieved passages, rising from 55% for questions when the answer
+option does not appear, to 77% for questions mentioned more than 15 times.
+A human analysis of retrieved documents revealed that documents are helpful for answering questions in a
+number of diﬀerent ways. Manual inspection of a sample of 50 correctly-answered questions revealed that
+44% contained at least partially useful background information. These are documents that would improve the
+likelihood of a non-expert human answering correctly, such as contextual clues surrounding a quotation from
+a question, or helpful numerical ﬁgures for quantity-based questions, which help to narrow down the answer
+options to a smaller range. In a further 26% of cases, a passage contained all the necessary information to
+answer the question, stated in a straightforward way. If read competently, such passages make the question
+simple to answer, and often include information such as canonical deﬁnitions, or the exact numerical answer
+requested in the question. 28% of retrieval sets did not contain obvious information which would make the
+question easier. Finally, 2% contained the verbatim question in a passage, together with its answer.
+Given that MMLU has been created from pre-existing exams, it is possible that these questions appear on the
+open web. Models trained on web data (or, in our case, retrieving from it) run the risk of answering correctly
+not through generalisation, but by verbatim memorisation, which could lead to misleadingly high scores. In
+some very large language models, which can verbatim memorize and recall large parts of their pre-training
+6Note: Depending on the question, it may not be important or useful to retrieve the exact text of the answer in MMLU, and
+as such, a hits@k value of 30% does not imply that retrieval fails to surface useful information in 70% of cases
+16
+data (Carlini et al., 2021), eﬀorts have sometimes been made to ﬁlter occurrences of downstream instances
+from pre-training data, but this has not been performed for MMLU in the literature. In order to assess the
+prevalence of MMLU leakage in our index, we manually checked retrieval results for questions where the
+longest n-gram overlap between the question (without answer options) and a passage was at least 75% the
+length of the question. This resulted in an estimate of leakage of 2.8% of questions from our CC-Net corpus.
+A beneﬁt of retrieval-augmented models such asAtlasis the editability of its knowledge (see section 5.2
+for additional analysis). To estimate pure, non-leaked performance, we can ﬁlter out any potentially-leaked
+passages from retrieved results and rerun the language model. The MMLU score drops slightly when
+controlling for this leakage from 56.4 to 55.8% (-.5%).We note that our CC-net corpus is relatively small
+compared to the pre-trained corpora of recent very large models, which are trained on up to 1.4 trillion
+tokens (Hoﬀmann et al., 2022), 35x the size of our index, making it likely that models trained on corpora
+of that size would observe more MMLU leaked examples, but detecting such leakage is challenging in
+non-retrieval augmented models.
+5.2 Temporal Sensitivity and Updateability
+A beneﬁt of retrieval-augmented models is that they can be kept up-to-date without retraining, by updating
+or swapping their index at test time. To assess the eﬀectiveness of this mechanism inAtlas, we ﬁrst construct
+a dataset of time-sensitive questions derived from TempLAMA (Dhingra et al., 2022). TempLAMA is a
+collection of templated cloze questions derived from Wikidata and Wikidata where the correct answer changes
+over time. We select a subset of questions from this dataset which have a diﬀerent answer in 2017 and 2020,
+for example, Question: Theo Walcott plays for ___Answer: Arsenal F.C. (2017), Everton F.C. (2020),
+and form a small training set of 248 training, 112 development and 806 test questions.
+Using this dataset, we ﬁnetune closed-book T5-XXL andAtlasusing the questions and the 2017 answers,
+supplying Atlas with a 2017 Wikipedia index, and then measure exact match accuracy on the 2017 test
+set. The results can be found in the ﬁrst row and ﬁrst two columns of Table 11. We ﬁrst observe that, as
+expected, Atlas greatly outperforms T5 (57.7% c.f. 12.1%). We also note that, as desired, both T5 and
+Atlasalmost never generate an answer from 2020 when trained with the 2017 answers, scoring 2.8% and
+1.5% respectively (ﬁrst row, second two columns of Table 11). However, as shown in row 2, we can swap the
+Atlas index to a 2020 Wikipedia index,without retraining, and ﬁnd thatAtlas updates its predictions
+accordingly, with 2020 accuracy rising to a similar level to its 2017 performance (53.1%), whereas the purely
+parametric T5 has no such updateability mechanism.
+This demonstrates thatAtlascan be faithful and condition strongly on its supplied index. Furthermore, this
+zero-shot updateability mechanism has the useful property of staying up-to-date without requiring up-to-date
+annotated data, or continuous, lifelong pre-training, as would be may required for a large parametric-only
+model. Rows 3 and 4 of Table 11 complete the picture, where this time we train with 2020 answers, and
+demonstrate Atlascan zero-shot transfer backwards in time to 2017 eﬀectively too (50.1%). Interestingly,
+T5 is unable answer questions from 2020 well, even when trained with 2020 answers (3.6%), likely because it
+was pre-trained on data pre-dating 2020 (Dodge et al., 2021).
+We also examine temporal eﬀects for NaturalQuestions. NaturalQuestions is a dataset composed of search
+queries collected via the Google search engine in a short period of time. Thus data have a strong temporal
+bias, with a lot of questions about the 2018 World Cup for example. Moreover some questions are ambiguous
+without speciﬁcation of the temporal context. For instance, for the question“when did ireland last beat
+england at twickenham”, the expected answer is 2018 in NaturalQuestions, while Ireland also beat England at
+Twickenham in 2022 as well as many other times before. In Table 12, we report results obtained by ﬁnetuning
+Atlas using diﬀerent Wikipedia dumps for the index. We observe that the 2018 December Wikipedia dump,
+which is close to the date of data collection, leads to the best results for both few-shot and full ﬁne-tuning.
+In particular, it leads to a new state-of-the-art of 64 EM on NaturalQuestions.
+17
+Table 11:Results on our TempLAMA-derived dataset.We report performance for a static, closed-book
+T5-11B, as well asAtlas-11B supplied with a test-time Wikipedia index from 2017 or 2020. We evaluate
+models ﬁnetuned on a small training set of 248 time-sensitive cloze-question-answer pairs, using answers
+either from 2017 or 2020. Good models should score highly when the test set year matches the year of the
+test-time index, and score low otherwise.
+2017 Test Set Acc. 2020 Test Set Acc.
+Train Set Test-time Index Closed-book Atlas Closed-book Atlas
+2017 answers 2017 12.1 57.7 2.9 1.52020 12.1 10.2 2.9 53.1
+2020 answers 2017 4.8 50.1 3.6 4.22020 4.8 3.5 3.6 60.5
+Table12: ImpactofindexdatatemporalityonNaturalQuestions. Wereportexactmatchperformance
+on NaturalQuestions using diﬀerent Wikipedia dumps in the index. We observe that the dump from December
+2018, commonly used for NaturalQuestions, leads to the best result.
+Dec. 2017 Dec. 2018 Aug. 2019 Dec. 2020 Dec. 2021
+64-shot 44.7 45.1 44.1 44.0 41.3
+Full 63.2 64.0 62.4 61.1 59.6
+5.2.1 Index Compression
+Maintaining dense retrieval indices can be memory-intensive, especially as the number of indexed items is
+scaled. In this section, we brieﬂy analyse the memory requirements ofAtlas’s index in the case of a) a
+Wikipedia index and b) the combined CC and Wikipedia index used in most of the experiments above.
+There are two sources of memory pressure forAtlas’s retrieval component – the passages themselves, and
+the document embedding index. The tokenized passages, once binarized, require 11GB and 130GB of storage
+for the Wikipedia and combined indices respectively. These passages do not need to be stored in expensive
+GPU RAM, and could even be memory-mapped to disk, sharded across nodes or compressed if required, and
+thus do not represent a limiting hardware challenge in this context. The embedding index itself, however,
+must be stored in GPU RAM for fast search, and thus its size is more sensitive. In the above experiments,
+we perform exact search over our index, which is achieved by sharding the index over all the the available
+GPUs, and computing the search in parallel. The index is stored at fp16 precision, resulting in a total GPU
+memory requirement of 49 GB and 587 GB for the Wikipedia and combined indices, respectively.
+This large GPU memory requirement for the index limits accessibility and ease of deployment. However,
+many index compression techniques are available for nearest neighbour search, which can often dramatically
+reduce memory requirements at the cost of some retrieval accuracy. Following Izacard et al. (2020), we
+explore the eﬀect of Product Quantization (PQ, Jégou et al., 2011), a popular lossy compression technique
+on Atlas-3B’s accuracy for the 64-shot NQ task at diﬀerent compression levels.
+The results are shown in Figure 4. We ﬁnd that substantial compression is possible before the onset of
+signiﬁcant performance degradation. Namely, the Wikipedia index can be compressed from 49GB to 4GB
+with negligible drop in retrieval precision and exact match. Likewise, the combined index can be compressed
+from 587GB to 50GB without serious degradation, indicating that the combined index could be loaded onto
+a single 80GB GPU.
+18
+101 102
+Memory (in GB)
+0.2
+0.4
+0.6
+0.8NQ Recall@50
+101 102
+Memory (in GB)
+10
+20
+30
+40NQ Exact Match
+100 101
+Memory (in GB)
+0.2
+0.4
+0.6
+0.8NQ Recall@50
+100 101
+Memory (in GB)
+10
+20
+30
+40NQ Exact Match
+Figure 4:Index Compression: Atlas-3B 64-shot NQ performance (left column: Retrieval Recall@50, right
+column: QA Exact Match score), as a function of index size, for diﬀerent levels of quantisation. The right-most
+point in each plot represents the uncompressed index.Top Row:Wikipedia + CC Index.Bottom Row:
+Wikipedia Index.
+6 Discussion
+In this paper, we introduceAtlas, a large retrieval-augmented language model. By jointly pre-training the
+retriever module and the language model, we show thatAtlas has strong few-shot learning capabilities on a
+wide range of knowledge intensive tasks, including NaturalQuestions, TriviaQA, FEVER, 8 KILT tasks and 57
+MMLU tasks. For example,Atlas-11B reaches more than 42% accuracy on NaturalQuestions and 84.7% on
+TriviaQA when training on 64 examples, which is an improvement of almost 3 points compared to PaLM, a
+540B parameters model, which required 50x more pre-training compute. We also provided detailed ablations
+and analyses for what factors are important when training such retrieval-augmented models, and demonstrated
+Atlas’s updateability, interpretability and controlability capabilities. Lastly, we demonstrated thatAtlas is
+also powerful in full-dataset settings obtaining a new state-of-the-art results on NaturalQuestions, TriviaQA,
+FEVER, and 5 KILT tasks.

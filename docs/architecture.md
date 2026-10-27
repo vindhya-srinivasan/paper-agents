@@ -28,7 +28,7 @@ flowchart LR
     D -- run_sql --> Q[(SQLite<br/>paper metadata)]
     R -- web_search --> T[[Tavily Remote MCP<br/>Streamable HTTP]]
     M -- web_search --> T
-    S -. "plan (structured)" .-> G1[/Gemini Flash/]
+    S -. "plan (structured)" .-> G1[/Gemini 3.5 Flash-Lite/]
     R & D & M -. "tool selection" .-> G1
     A -. "routed: simple" .-> G1
     A -. "routed: complex / long" .-> N1[/NVIDIA Nemotron/]
@@ -75,28 +75,29 @@ Specialization is by **distinct tool access and distinct system prompts** (`src/
 
 | Agent | Responsibility | Tools (exclusive unless noted) | System prompt focus | Model / provider |
 |---|---|---|---|---|
-| **Supervisor** (not counted) | Plan which workers to run, route between them | none | Worker catalogue, plan rules, complexity rubric | Gemini Flash (structured output) |
-| **Research** | Grounded answers about methods/results, plus current events | `search_corpus` (Chroma top-k), `web_search` (Tavily MCP, **shared**) | Gather evidence only, never answer from memory, use the web for anything after 2024 | Gemini Flash for tool selection |
-| **Data** | Counting / listing / ranking over paper metadata | `run_sql` (read-only SQLite) | Full table schema, SQL rules, fix the query on error | Gemini Flash for tool selection |
-| **Summary** | Faithful summary of one named paper, plus follow-up work | `read_paper` (ordered chunks of one paper), `web_search` (Tavily MCP, **shared**) | Always load the paper, search the web for impact/follow-ups | Gemini Flash for tool selection |
-| **respond** (answer writer) | Augmented generation with citations | none | Citation rules (see §4) | **Routed**: Gemini Flash or NVIDIA Nemotron |
+| **Supervisor** (not counted) | Plan which workers to run, route between them | none | Worker catalogue, plan rules, complexity rubric | Gemini 3.5 Flash-Lite (structured output) |
+| **Research** | Grounded answers about methods/results, plus current events | `search_corpus` (Chroma top-k), `web_search` (Tavily MCP, **shared**) | Gather evidence only, never answer from memory, use the web for anything after 2024 | Gemini 3.5 Flash-Lite for tool selection |
+| **Data** | Counting / listing / ranking over paper metadata | `run_sql` (read-only SQLite) | Full table schema, SQL rules, fix the query on error | Gemini 3.5 Flash-Lite for tool selection |
+| **Summary** | Faithful summary of one named paper, plus follow-up work | `read_paper` (ordered chunks of one paper), `web_search` (Tavily MCP, **shared**) | Always load the paper, search the web for impact/follow-ups | Gemini 3.5 Flash-Lite for tool selection |
+| **respond** (answer writer) | Augmented generation with citations | none | Citation rules (see §4) | **Routed**: Gemini 3.5 Flash-Lite or NVIDIA Nemotron 3 Ultra |
 
 Worker LLM calls only select tools and arguments. After tools run, the worker returns its evidence directly instead of making a second "summarize" LLM call. That saves one call per worker. The single answer is written by `respond`.
 
 ## 3. LLM routing (`src/llm/router.py`)
 
-Providers: **Google** `gemini-3.8-flash` and **NVIDIA NIM** `nvidia/nemotron-3-ultra-550b-a55b` (exact IDs in `.env.example`, verified with `scripts/check_models.py`). Routing dimension: **hybrid (cost + capability)**. `router.decide()` is a pure function and is unit-tested in `tests/test_graph.py::test_router_decisions_are_pure_and_documented`.
+Providers: **Google** `gemini-3.5-flash-lite` and **NVIDIA NIM** `nvidia/nemotron-3-ultra-550b-a55b` (exact IDs in `.env.example`, verified on 2026-10-26 with `scripts/check_models.py`; `gemini-3.8-flash` and `3.7-flash` returned 503 on the free tier that day). Routing dimension: **hybrid (cost + capability)**. `router.decide()` is a pure function and is unit-tested in `tests/test_graph.py::test_router_decisions_are_pure_and_documented`.
 
 | Role | Condition (state signal) | Provider → model | Dimension | Why |
 |---|---|---|---|---|
-| supervisor plan | always | Gemini Flash | cost | Short JSON classification; the cheapest, fastest model with reliable structured output |
-| worker tool selection | always | Gemini Flash | cost | Short function-calling step; Flash has native function calling |
+| supervisor plan | always | Gemini Flash-Lite | cost | Short JSON classification; the cheapest, fastest model with reliable structured output |
+| worker tool selection | always | Gemini Flash-Lite | cost | Short function-calling step; Flash-Lite has native function calling |
 | respond | `complexity == "complex"` | NVIDIA Nemotron | capability | Multi-step reasoning or a comparison across papers |
 | respond | `n_sources >= 2` (two or more workers' results) | NVIDIA Nemotron | capability | Integrating evidence from different agents |
 | respond | `context_chars > 8000` (e.g. a full-paper summary) | NVIDIA Nemotron | capability | Long-context synthesis |
-| respond | none of the above | Gemini Flash | cost | Single-source short answer |
+| respond | none of the above | Gemini Flash-Lite | cost | Single-source short answer |
 | any | chosen provider's key missing | the other provider | availability | Keeps the service up |
-| any | chosen provider errors | the other provider | fallback | Retry once; traced |
+| any | Gemini model returns 429 / 503 (quota, overload) | next Gemini model in `GEMINI_FALLBACK_MODELS` (`gemini-3.6-flash`, `gemini-3.5-flash`) | same dimension | Each model has its own free-tier quota, so the provider choice is kept; the exhausted model is skipped for 60 s |
+| any | all Gemini models exhausted, or any other error | the other provider | fallback | Keeps answering; traced with the error |
 
 Every decision is emitted as an `llm_route` trace event with `provider`, `model`, `dimension`, `reason` and the `signals` that drove it. The UI shows these in the **Routing** tab for every turn, so a grader can see why each provider handled each step without reading code. The smoke test checks that the `respond` step used **both** providers across a normal query mix.
 
@@ -109,7 +110,7 @@ Every decision is emitted as an `llm_route` trace event with `provider`, `model`
 | **Embeddings** | Local `sentence-transformers` `BAAI/bge-small-en-v1.5` (384-d, normalized; BGE query instruction prefix on queries only) |
 | **Storage** | Embedded **Chroma** `PersistentClient`, cosine space, built inside the Docker image from the committed corpus text, so the index never comes from a laptop |
 | **Retrieval** (`src/rag/retriever.py`) | top-**k = 5** by cosine similarity. The Summary agent instead loads the first 8 chunks of one paper in reading order |
-| **Augmentation** | Up to 12 deduplicated sources are numbered `[1]..[n]` with title, year, arXiv ID and chunk ID, plus each agent's notes and the last 6 conversation turns |
+| **Augmentation** | Up to 12 deduplicated sources are numbered `[1]..[n]` with title, year, arXiv ID and chunk ID, plus each agent's notes and the last 16 messages (8 question/answer pairs) of conversation |
 | **Generation** | LCEL chain `RunnableLambda(state → inputs) \| ChatPromptTemplate \| routed LLM`, streamed token by token |
 | **Citations** | Each `[n]` maps to a `citation` SSE event carrying `arxiv_id`, chunk `id`, `url` (arxiv.org/abs/…) and a snippet. The UI links `[n]` in the answer to the source card |
 
@@ -142,7 +143,14 @@ Sources:
 ...
 
 User question: {question}
+
+Write the answer now. Citation format is mandatory: put the source number in square brackets right
+after each factual sentence, e.g. "Self-RAG trains the model to emit reflection tokens [2]." Use only
+numbers that appear under Sources. If Sources says "(no sources retrieved)", answer from the agent
+notes without brackets.
 ```
+
+The closing reminder was added after the first live smoke test: Nemotron Ultra followed the system-prompt citation rule inconsistently, while a rule repeated immediately before generation was followed every time (19/19 checks afterwards).
 
 Evaluation: RAGAS (faithfulness, answer relevancy, context precision, context recall) over the fixed 15-question set in `src/eval/questions.json`. Results are in `docs/evaluation.md`.
 
@@ -156,7 +164,7 @@ Path chosen: **MCP tool sharing** (not A2A).
   - **Summary agent:** follow-up work and current impact of the paper being summarized ("ReAct follow-up work").
 - **Inspectability:** every call emits an `mcp_tool_call` trace event with the calling agent (`node`), server, MCP tool name, query, latency and result URLs. Web results become `web` citations.
 - **Rationale:** live retrieval is a capability both agents need for different reasons. One shared MCP connection avoids duplicated connection setup and per-agent API keys, and it keeps one place to handle quota and errors. The wrapper exposes a minimal `{query}` schema so both providers' function-calling handle it reliably, while the call itself goes through the MCP tool.
-- **Degradation:** missing key or unreachable server → `/healthz` reports it, agents get "web_search unavailable", and corpus answers still work.
+- **Degradation:** missing key or unreachable server → `/health` reports it, agents get "web_search unavailable", and corpus answers still work.
 
 ## 6. Durable state (Firestore)
 
@@ -166,8 +174,8 @@ The app claims multi-turn memory, so it persists conversation state **outside pr
   `{created, updated, turns: [{role, content, ts, meta: {plan, providers}}]}` (last 40 turns kept).
 - **Per turn:** the API loads the document → passes `history` into graph state → after the answer streams, appends the user + assistant turns. The graph itself is stateless per turn, so any Cloud Run instance can serve any session (scale-out safe), and a new instance after recycling or redeploy reads the same history.
 - **Why not a LangGraph checkpointer:** what must survive is the conversation, not the mid-turn graph state. A turn completes within a single request, so checkpointing intermediate nodes would add writes without adding durability that matters.
-- **Local dev:** `STATE_BACKEND=memory` is a process dict, labeled "not durable" in `/healthz` and the trace. It is never claimed as persistence.
-- **Proof:** see `docs/evaluation.md` §Durability. The test asks a question, forces a new instance (new revision), confirms `/healthz` shows a different `instance_id`, then asks "what was my first question?" on the same session. The UI also restores the session's history from Firestore on page load.
+- **Local dev:** `STATE_BACKEND=memory` is a process dict, labeled "not durable" in `/health` and the trace. It is never claimed as persistence.
+- **Proof:** see `docs/evaluation.md` §Durability. The test asks a question, forces a new instance (new revision), confirms `/health` shows a different `instance_id`, then asks "what was my first question?" on the same session. The UI also restores the session's history from Firestore on page load.
 - **Access:** the Cloud Run runtime service account gets `roles/datastore.user` (`deploy.sh`). No credentials are stored in the image.
 
 ## 7. Streaming contract (SSE)
@@ -182,7 +190,7 @@ The app claims multi-turn memory, so it persists conversation state **outside pr
 | `error` | `{message, node}` |
 | `done` | `{plan, providers, timings_ms: {total, ttft, llm, retrieval, tools}, usage, cost_usd, instance_id}` |
 
-Other routes: `GET /` (UI), `GET /static/*`, `GET /healthz` (index, MCP, store, providers, instance id), `GET /api/history`, `POST /api/reset`.
+Other routes: `GET /` (UI), `GET /static/*`, `GET /health` (index, MCP, store, providers, instance id), `GET /api/history`, `POST /api/reset`.
 
 ## 8. Deployment shape
 

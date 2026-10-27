@@ -86,8 +86,10 @@ async def index():
     return FileResponse(STATIC / "index.html")
 
 
-@app.get("/healthz")
-async def healthz():
+# /health, not /healthz: Cloud Run's Google front end reserves /healthz and answers it with its own 404.
+@app.get("/health")
+@app.get("/healthz", include_in_schema=False)   # local-dev alias only; unreachable on Cloud Run
+async def health():
     return {"status": "ok", "instance_id": INSTANCE_ID, "revision": os.getenv("K_REVISION", "local"),
             "uptime_s": round(time.time() - STARTED_AT, 1), **STATUS}
 

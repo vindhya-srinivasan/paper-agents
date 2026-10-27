@@ -125,7 +125,7 @@ def main(target: str) -> int:
     # evaluation.md required content
     ev = (root / "docs/evaluation.md").read_text()
     for m in ("Faithfulness", "Answer relevancy", "Context precision", "Context recall"):
-        row = re.search(rf"\|\s*{m}\s*\|[^\n]*\|\s*([0-9.]+)\s*\|", ev)
+        row = re.search(rf"\|\s*{m}\s*\|[^\n]*\|\s*\**([0-9]*\.[0-9]+)\**\s*\|", ev)
         check(row, f"evaluation.md reports a number for {m}")
     evl = ev.lower()
     for needle, what in [("time to first token", "TTFT"), ("cold", "cold-start latency"), ("warm", "warm latency"),

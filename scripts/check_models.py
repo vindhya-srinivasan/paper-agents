@@ -12,15 +12,21 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import ssl
 import urllib.request
 from pathlib import Path
+
+import certifi
+
+# certifi's CA bundle: python.org macOS builds ship without system certificates.
+_SSL = ssl.create_default_context(cafile=certifi.where())
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src import config  # noqa: E402
 
 
 def get_json(url: str, headers: dict) -> dict:
-    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30) as r:
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=30, context=_SSL) as r:
         return json.loads(r.read())
 
 
@@ -59,7 +65,14 @@ async def chat_checks() -> None:
         return a + b
 
     for p in router.PROVIDERS:
-        llm = router.get_chat(p)
+        if not router.provider_available(p):
+            print(f"== {p}: SKIPPED, no API key in .env")
+            continue
+        try:
+            llm = router.get_chat(p)
+        except Exception as e:  # noqa: BLE001
+            print(f"== {p}: client could not be created ({type(e).__name__}: {str(e)[:200]})")
+            continue
         t0 = time.perf_counter()
         try:
             msg = await llm.ainvoke("Reply with exactly: OK")
